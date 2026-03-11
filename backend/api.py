@@ -11,7 +11,6 @@ Endpoints:
 """
 
 import os
-import sys
 import uuid
 import shutil
 import tempfile
@@ -22,12 +21,8 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Make sure the project root is on the path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-os.chdir(Path(__file__).parent.parent)   # run from RAG/ so relative paths work
-
-from src.services import config
-from src.services.rag import RAGPipeline
+from backend.core import config
+from backend.core.rag import RAGPipeline
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +150,7 @@ async def update_settings(req: SettingsRequest):
     """Update system settings and persist them to .env file."""
     try:
         # Update in memory config
-        from src.services import config as cfg
+        from backend.core import config as cfg
         cfg.HYBRID_ALPHA = req.hybrid_alpha
         
         # Update .env file

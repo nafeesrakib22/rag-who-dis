@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+backend/core/__pycache__/
 *.py[cod]
 *$py.class
 *.so

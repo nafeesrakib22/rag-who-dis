@@ -20,7 +20,7 @@ Usage:
 
 import argparse
 import sys
-from src.services.rag import RAGPipeline
+from backend.core.rag import RAGPipeline
 
 
 def print_banner():

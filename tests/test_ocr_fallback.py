@@ -1,8 +1,5 @@
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.curdir))
-from src.services.loader import load_document, is_text_corrupted
+from backend.core.loader import load_document, is_text_corrupted
 
 def test_loader(file_path):
     print(f"Testing loader for: {file_path}")

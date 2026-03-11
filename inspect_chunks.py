@@ -1,18 +1,8 @@
-import os
-import sys
 from pathlib import Path
 
-# Add current directory to path if needed
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
-
 # Load config (environment variables)
-try:
-    import src.services.config 
-except ImportError:
-    print("[error] Could not import src.services.config. Run this from the project root.")
-    sys.exit(1)
-
-from src.services.weaviate_store import WeaviateStore
+import backend.core.config
+from backend.core.weaviate_store import WeaviateStore
 
 def inspect_chunks():
     """
