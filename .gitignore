@@ -25,7 +25,7 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
-
+*_env/
 # Environment Variables (SENSITIVE)
 .env
 .env.local
