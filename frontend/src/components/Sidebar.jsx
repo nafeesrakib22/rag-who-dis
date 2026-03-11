@@ -23,8 +23,8 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
         <aside className="sidebar">
             {/* Logo */}
             <div className="sidebar-logo">
-                <div className="logo-icon">🔮</div>
-                <h1>RAG Chat</h1>
+                <div className="logo-icon">🪓</div>
+                <h1>Bring me Thanos!</h1>
             </div>
 
             {/* Knowledge base status */}
@@ -103,7 +103,7 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
                 <div>📦 Weaviate (hybrid search)</div>
                 <div>🧠 embeddinggemma (Ollama)</div>
                 <div>🔀 ms-marco cross-encoder</div>
-                <div>🤖 Gemini 2.5 flash</div>
+
             </div>
         </aside>
     )

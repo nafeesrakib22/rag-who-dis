@@ -1,17 +1,16 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
-import ChatPanel from './components/ChatPanel'
 import RetrievalTrace from './components/RetrievalTrace'
 
 export default function App() {
-  const [messages, setMessages] = useState([])
+  const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
+  const [stages, setStages] = useState(null)
+  const [error, setError] = useState(null)
   const [chunkCount, setChunkCount] = useState(null)
   const [hybridAlpha, setHybridAlpha] = useState(0.7)
-  const [activeTrace, setActiveTrace] = useState(null)
   const [toast, setToast] = useState(null)
 
-  // Fetch status on mount
   useEffect(() => { fetchStatus() }, [])
 
   const showToast = (msg, type = 'success') => {
@@ -28,39 +27,26 @@ export default function App() {
     } catch { /* ignore */ }
   }
 
-  const sendMessage = async (question) => {
-    if (!question.trim() || loading) return
-
-    const userMsg = { role: 'user', content: question, id: Date.now() }
-    setMessages(prev => [...prev, userMsg])
+  const handleSearch = async (e) => {
+    e.preventDefault()
+    if (!query.trim() || loading) return
     setLoading(true)
-
+    setError(null)
+    setStages(null)
     try {
-      const res = await fetch('/api/chat', {
+      const res = await fetch('/api/retrieve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: query }),
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.detail || 'Error from server')
+        throw new Error(err.detail || 'Server error')
       }
       const data = await res.json()
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: data.answer,
-        sources: data.sources,
-        stages: data.stages,
-        id: data.message_id,
-      }])
+      setStages(data.stages)
     } catch (e) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `⚠️ ${e.message}`,
-        sources: [],
-        id: Date.now(),
-        error: true,
-      }])
+      setError(e.message)
     } finally {
       setLoading(false)
     }
@@ -98,7 +84,7 @@ export default function App() {
     try {
       await fetch('/api/clear', { method: 'POST' })
       setChunkCount(0)
-      setMessages([])
+      setStages(null)
       showToast('Knowledge base cleared.')
     } catch (e) {
       showToast(`❌ ${e.message}`, 'error')
@@ -106,7 +92,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app ${activeTrace ? 'with-trace' : ''}`}>
+    <div className="app">
       <Sidebar
         chunkCount={chunkCount}
         hybridAlpha={hybridAlpha}
@@ -114,26 +100,41 @@ export default function App() {
         onIngest={handleIngest}
         onClear={handleClear}
       />
-      <ChatPanel
-        messages={messages}
-        loading={loading}
-        onSend={sendMessage}
-        onViewTrace={(msgId) => {
-          const idx = messages.findIndex(m => m.id === msgId)
-          if (idx === -1) return
-          const msg = messages[idx]
-          // If it's an assistant message, the query is usually the previous user message
-          const question = (msg.role === 'assistant' && idx > 0) ? messages[idx - 1].content : msg.content
-          setActiveTrace({ stages: msg.stages, query: question })
-        }}
-      />
-      {activeTrace && (
-        <RetrievalTrace
-          stages={activeTrace.stages}
-          query={activeTrace.query}
-          onClose={() => setActiveTrace(null)}
-        />
-      )}
+
+      <main className="retrieval-main">
+        <div className="retrieval-header">
+          <h2>Retrieve Who dis</h2>
+          <p>Enter a query to see how the pipeline retrieves and ranks chunks from your knowledge base.</p>
+        </div>
+
+        <form className="search-form" onSubmit={handleSearch}>
+          <input
+            className="search-input"
+            type="text"
+            placeholder="Enter your query…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            disabled={loading}
+          />
+          <button className="btn btn-primary search-btn" type="submit" disabled={loading || !query.trim()}>
+            {loading ? <span className="spinner" /> : 'Search'}
+          </button>
+        </form>
+
+        {error && <div className="error-banner">⚠️ {error}</div>}
+
+        {stages && (
+          <RetrievalTrace stages={stages} query={query} />
+        )}
+
+        {!stages && !loading && !error && (
+          <div className="empty-state">
+            <div className="empty-icon">🔍</div>
+            <p>Enter a query above to inspect the retrieval pipeline.</p>
+          </div>
+        )}
+      </main>
+
       {toast && (
         <div className={`toast ${toast.type}`}>{toast.msg}</div>
       )}

@@ -113,7 +113,6 @@ async def chat(req: ChatRequest):
 
 @app.post("/api/ingest")
 async def ingest(file: UploadFile = File(...)):
-    """Upload a PDF or Markdown file and ingest it into the vector store."""
     allowed = {".pdf", ".md", ".txt"}
     suffix = Path(file.filename).suffix.lower()
     if suffix not in allowed:
@@ -187,3 +186,49 @@ async def clear():
     """Wipe all chunks from the vector store."""
     pipeline.store.clear()
     return {"message": "Knowledge base cleared.", "chunk_count": 0}
+
+
+class RetrieveRequest(BaseModel):
+    question: str
+
+@app.post("/api/retrieve")
+async def retrieve(req: RetrieveRequest):
+    """Run hybrid search + reranking, return both stages without calling the LLM."""
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+    try:
+        from backend.core import config as cfg
+        # Embed
+        query_vector = pipeline.embedder.embed([req.question], mode="query")[0]
+        # Stage 1 — hybrid search
+        candidates = pipeline.store.query(
+            query_vector,
+            n_results=cfg.RERANK_CANDIDATES,
+            query_text=req.question,
+        )
+        # Stage 2 — rerank
+        reranked = pipeline.reranker.rerank(req.question, candidates, top_n=cfg.TOP_K_RESULTS)
+
+        def fmt(chunks):
+            return [
+                {
+                    "n": i + 1,
+                    "source": c["source"],
+                    "page": c["page"],
+                    "chunk_index": c["chunk_index"],
+                    "hybrid_score": c.get("hybrid_score"),
+                    "rerank_score": c.get("rerank_score"),
+                    "text": c["text"],
+                    "preview": c["text"][:120] + "..." if len(c["text"]) > 120 else c["text"],
+                }
+                for i, c in enumerate(chunks)
+            ]
+
+        return {
+            "stages": {
+                "initial": fmt(candidates),
+                "reranked": fmt(reranked),
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
