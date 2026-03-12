@@ -80,12 +80,12 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
                         min="0"
                         max="1"
                         step="0.05"
-                        value={hybridAlpha || 0.7}
+                        value={hybridAlpha ?? 0.7}
                         onChange={(e) => onAlphaChange(parseFloat(e.target.value))}
                         className="alpha-slider"
                     />
                     <div className="alpha-value">
-                        Alpha: <strong>{(hybridAlpha || 0.7).toFixed(2)}</strong>
+                        Alpha: <strong>{(hybridAlpha ?? 0.7).toFixed(2)}</strong>
                     </div>
                 </div>
             </div>
