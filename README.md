@@ -1,160 +1,143 @@
-# Introduction to Retrieval-Augmented Generation (RAG)
+# RAG System — Retrieval-Augmented Generation
 
-## What is RAG?
+A full-stack RAG system that lets you ingest PDF, Markdown, JSON, and text documents
+and ask questions answered with citations — grounded entirely in your own documents.
 
-Retrieval-Augmented Generation (RAG) is a technique that enhances Large Language Models (LLMs)
-by giving them access to external, up-to-date knowledge at query time.
-
-A standard LLM is trained on a fixed dataset with a knowledge cutoff date. It cannot know about:
-- Your private documents
-- Events after its training cutoff
-- Proprietary internal data
-
-RAG solves this by retrieving relevant information from a knowledge base and injecting it
-into the LLM's prompt as context. The model then generates an answer grounded in that context.
-
-## How RAG Works — Step by Step
-
-### Ingestion Pipeline (offline / one-time)
-
-```
-Document (PDF/Markdown)
-    → Load          Extract raw text page by page
-    → Chunk         Split into small overlapping windows (~500 characters)
-    → Embed         Convert each chunk to a dense vector (384 floats)
-    → Store         Save vectors + metadata in ChromaDB
-```
-
-### Query Pipeline (real-time)
-
-```
-User Question
-    → Embed         Same model as ingestion — must match!
-    → Retrieve      ChromaDB: find top-5 most similar chunks (cosine similarity)
-    → Prompt        Build context-injected prompt with retrieved chunks
-    → Generate      Gemini API: answer grounded in retrieved context
-    → Cite          Return answer + source citations
-```
-
-## Key Concepts
-
-### Chunking
-Long documents are split into small text windows with overlap. Smaller chunks produce
-more precise embeddings and better retrieval. Overlap prevents information loss at boundaries.
-
-### Embeddings
-Text is converted to high-dimensional vectors (384 floats with `all-MiniLM-L6-v2`).
-Semantically similar text produces geometrically close vectors. This enables semantic search —
-finding relevant content even when the exact words don't match the query.
-
-### Vector Database (ChromaDB)
-Stores chunk embeddings. At query time, computes cosine similarity between the query vector
-and all stored vectors. Returns the top-k most similar chunks. Much faster than naive
-brute-force search thanks to HNSW indexing.
-
-### Grounded Generation
-The LLM is instructed to answer ONLY from the provided context. This reduces hallucination
-and makes every answer verifiable through citations.
-
----
-
-## Technology Stack
+## Stack
 
 | Component | Tool |
 |---|---|
-| PDF Parsing | `pypdf` |
-| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`) |
-| Vector DB | `chromadb` (local persistent storage) |
-| LLM | `google-generativeai` — Gemini 1.5 Flash |
-| Interface | Python CLI (`argparse`) |
+| Document Parsing | `pymupdf` (with OCR fallback via EasyOCR or Gemini Vision) |
+| Chunking | Semantic chunking (`nltk` + cosine similarity) |
+| Embeddings | Ollama (local) — `embeddinggemma` model |
+| Vector DB | Weaviate (Docker) — hybrid BM25 + vector search |
+| Re-ranking | `BAAI/bge-reranker-v2-m3` cross-encoder |
+| LLM | Google Gemini API (`gemini-2.5-flash`) |
+| Backend API | FastAPI |
+| Frontend | React + Vite |
 
 ---
 
-## Setup
+## Setup (New Machine)
+
+### Prerequisites
+
+Make sure the following are installed on your machine:
+- **Python 3.10+**
+- **Docker** (for Weaviate)
+- **Ollama** — [install here](https://ollama.com/download)
+- **Node.js 18+** (for the frontend)
+
+### 1. Clone & configure environment
 
 ```bash
-# 1. Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate
+git clone <your-repo-url>
+cd RAG
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Set your Gemini API key
-export GEMINI_API_KEY=your_key_here
+# Create your .env from the template
+cp .env.example .env
 ```
 
----
+Open `.env` and fill in your values:
+- **`GOOGLE_API_KEY`** — get from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- All other values can be left as their defaults for a local setup.
 
-## Usage
+### 2. Start Weaviate (vector database)
 
 ```bash
-# Ingest a PDF
-python main.py add data/myfile.pdf
+docker compose up -d
+```
 
-# Ingest a Markdown file
-python main.py add data/notes.md
+### 3. Pull the embedding model via Ollama
+
+```bash
+ollama pull embeddinggemma
+```
+
+Make sure Ollama is running in the background (`ollama serve`).
+
+### 4. Install Python dependencies
+
+```bash
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 5. Start the backend
+
+```bash
+uvicorn backend.api:app --reload
+```
+
+### 6. Start the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The UI will be available at **http://localhost:5173**.
+
+---
+
+## CLI Usage
+
+You can also use the system entirely from the command line (no frontend needed):
+
+```bash
+# Ingest a document
+python -m backend.main add data/myfile.pdf
+python -m backend.main add data/notes.md
 
 # Ask a question
-python main.py ask "What is the main argument of the document?"
+python -m backend.main ask "What is the main argument of the document?"
 
-# Check knowledge base size
-python main.py status
+# Check how many chunks are stored
+python -m backend.main status
 
-# Clear everything
-python main.py clear
+# Clear the entire knowledge base
+python -m backend.main clear
 ```
 
 ---
 
-## Learning Path — Test Components in Isolation
+## How It Works
 
-These commands let you observe each component individually to understand what it does.
-
-### 1. Understand chunking
-```bash
-python -c "
-from src.chunker import chunk_text
-text = 'This is a test sentence. ' * 60
-chunks = chunk_text(text, {'source': 'test.txt', 'page': 1})
-print(f'Chunks produced: {len(chunks)}')
-print(f'Chunk 0 text: {chunks[0][\"text\"][:80]}')
-print(f'Chunk 1 text: {chunks[1][\"text\"][:80]}')
-print(f'Overlap visible: {chunks[0][\"text\"][-30:]} | {chunks[1][\"text\"][:30]}')
-"
+### Ingestion Pipeline
 ```
-> You'll see that chunk 1 starts with some of the same text chunk 0 ended with — that's the overlap.
-
-### 2. Understand embeddings
-```bash
-python -c "
-from src.embedder import Embedder
-e = Embedder()
-vecs = e.embed(['The cat sat on the mat.', 'A kitten rested on a rug.', 'Stock markets fell.'])
-print(f'Each text → a vector of {len(vecs[0])} floats')
-print(f'First 5 values of vec 0: {[round(x,3) for x in vecs[0][:5]]}')
-print(f'First 5 values of vec 1: {[round(x,3) for x in vecs[1][:5]]}')
-print('(vec 0 and vec 1 should look very similar since the sentences mean the same thing)')
-"
+Document (PDF / MD / TXT / JSON)
+    → Load          Extract text (with OCR fallback for scanned PDFs)
+    → Chunk         Semantic chunking using sentence embeddings
+    → Embed         Dense vectors via Ollama (embeddinggemma)
+    → Store         Weaviate: vectors + BM25 index
 ```
 
-### 3. Understand ChromaDB insert + retrieval
+### Query Pipeline
+```
+User Question
+    → Embed         Same model as ingestion
+    → Hybrid Search Weaviate: BM25 + vector (top 20 candidates)
+    → Re-rank       BAAI/bge-reranker-v2-m3 cross-encoder → top 5
+    → Prompt        Context-injected prompt with citations
+    → Generate      Gemini API → grounded answer
+```
+
+### OCR Strategy
+
+Controlled by `OCR_STRATEGY` in `.env`:
+- **`local`** — Uses EasyOCR on your machine (free, supports Bangla + English, slower)
+- **`llm`** — Uses Gemini Vision (higher quality, consumes `GOOGLE_API_KEY` quota)
+
+---
+
+## Utility Scripts
+
 ```bash
-python -c "
-import os; os.makedirs('/tmp/chroma_test', exist_ok=True)
-from src.embedder import Embedder
-from src.vector_store import ChromaStore
-e = Embedder()
-store = ChromaStore('/tmp/chroma_test')
-chunks = [
-    {'text': 'Paris is the capital of France.', 'source': 'geo.txt', 'page': 1, 'chunk_index': 0},
-    {'text': 'Berlin is the capital of Germany.', 'source': 'geo.txt', 'page': 1, 'chunk_index': 1},
-    {'text': 'The Eiffel Tower is in Paris.', 'source': 'geo.txt', 'page': 1, 'chunk_index': 2},
-]
-embeddings = e.embed([c['text'] for c in chunks])
-store.add_chunks(chunks, embeddings)
-results = store.query(e.embed(['What is the capital of France?'])[0], n_results=2)
-for r in results:
-    print(f'  → \"{r[\"text\"]}\" (distance={r[\"distance\"]})')
-"
+# Inspect all stored chunks in Weaviate
+python inspect_chunks.py
+
+# Preview text extraction from a PDF (without ingesting)
+python peek_text.py data/myfile.pdf
 ```
