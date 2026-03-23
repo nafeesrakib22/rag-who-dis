@@ -35,6 +35,9 @@ git clone <your-repo-url>
 cd RAG
 
 # Create your .env from the template
+# Linux / Mac:
+cp .env.example .env
+# Windows (PowerShell):
 cp .env.example .env
 ```
 
