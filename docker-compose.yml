@@ -1,7 +1,36 @@
----
-version: '3.4'
 services:
+
+  # ── Ollama (local LLM / embedding engine) ─────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag_ollama
+    volumes:
+      - ollama_data:/root/.ollama # model files persist across restarts
+    entrypoint: [ "/bin/bash", "-c" ]
+    command:
+      - |
+        ollama serve &
+        SERVE_PID=$$!
+        echo '[ollama] Waiting for Ollama to be ready...'
+        until ollama list > /dev/null 2>&1; do sleep 2; done
+        echo '[ollama] Pulling embeddinggemma model...'
+        ollama pull embeddinggemma
+        echo '[ollama] Ready.'
+        wait $$SERVE_PID
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: [ "CMD", "ollama", "list" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Weaviate (vector store) ────────────────────────────────────────────────
   weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.29.2
+    container_name: rag_weaviate
     command:
       - --host
       - 0.0.0.0
@@ -9,11 +38,9 @@ services:
       - '8080'
       - --scheme
       - http
-    image: cr.weaviate.io/semitechnologies/weaviate:1.29.2
     ports:
-      - 8080:8080
-      - 50051:50051
-    restart: on-failure:0
+      - "8080:8080"
+      - "50051:50051"
     volumes:
       - ./weaviate_db:/var/lib/weaviate
     environment:
@@ -23,3 +50,47 @@ services:
       DEFAULT_VECTORIZER_MODULE: 'none'
       ENABLE_MODULES: ''
       CLUSTER_HOSTNAME: 'node1'
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:8080/v1/.well-known/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: rag_backend
+    env_file:
+      - .env
+    environment:
+      # Override localhost values so containers resolve each other by service name
+      WEAVIATE_HOST: weaviate
+      OLLAMA_URL: http://ollama:11434
+    ports:
+      - "8000:8000"
+    depends_on:
+      weaviate:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── React frontend (Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rag_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+volumes:
+  ollama_data: # persists downloaded Ollama models

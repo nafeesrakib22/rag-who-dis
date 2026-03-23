@@ -24,9 +24,11 @@ wheels/
 
 # Virtual Environment
 venv/
+rag-venv/
 ENV/
 *_env/
 *venv
+
 # Environment Variables (SENSITIVE)
 .env
 .env.local
@@ -47,7 +49,11 @@ weaviate_db/
 chunks.txt
 data/
 
-# Frontend (if applicable)
+# Docker / ML artefacts (large, runtime-generated)
+ollama/models/
+.cache/
+
+# Frontend
 node_modules/
 /frontend/dist/
 frontend/node_modules/

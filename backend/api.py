@@ -50,7 +50,7 @@ app = FastAPI(title="RAG API", lifespan=lifespan)
 # Allow the Vite dev server (port 5173) to call us
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:4173"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

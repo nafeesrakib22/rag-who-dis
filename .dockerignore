@@ -1,0 +1,45 @@
+# ── Virtual environments & Python cache ───────────────────────────────────
+venv/
+rag-venv/
+ENV/
+*venv/
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+
+# ── Source control ─────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Environment / secrets (never send to daemon) ──────────────────────────
+.env
+.env.*
+*.env
+
+# ── Large data / DB volumes (runtime-generated, not needed at build time) ──
+weaviate_db/
+chroma_db/
+data/
+ollama/
+
+# ── Frontend build outputs (built inside the container) ───────────────────
+frontend/node_modules/
+frontend/dist/
+
+# ── ML model caches (baked in via Dockerfile RUN, not needed as context) ──
+.cache/
+**/.cache/
+
+# ── IDE / OS noise ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Docs / tests (not needed to run the app) ──────────────────────────────
+README.md
+tests/
+inspect_chunks.py
+peek_text.py
