@@ -218,14 +218,17 @@ class RAGPipeline:
         import numpy as np
         def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
         selected = []
-        for m in past:
-            try:
-                # Embed text to compare
-                m_vec = self.embedder.embed([m['content']], mode="query")[0]
-                if cosine(query_vector, m_vec) >= threshold:
+        try:
+            # Batch embed all past messages at once (much faster on CPU)
+            contents = [m['content'] for m in past]
+            m_vectors = self.embedder.embed(contents, mode="query")
+            for i, m in enumerate(past):
+                if cosine(query_vector, m_vectors[i]) >= threshold:
                     selected.append(m)
-            except: pass
+        except Exception as e:
+            print(f"[rag] Error batch embedding past messages: {e}")
         return selected
+
 
     def _condense_query(self, summary: str, selected: list[dict], recent: list[dict], question: str) -> str:
         context = []
