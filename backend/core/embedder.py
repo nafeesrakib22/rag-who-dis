@@ -1,38 +1,42 @@
+"""
+embedder.py — Local HuggingFace embedding via sentence-transformers
 
+Loads google/embeddinggemma-300m in-process (no Ollama required).
+The model is downloaded to the HuggingFace cache on first use
+(~600 MB) and reused from disk on subsequent starts.
+"""
 
-import requests
+import numpy as np
+from sentence_transformers import SentenceTransformer
 from . import config
 
 
 class Embedder:
 
-    def __init__(self, ollama_url: str = None, model: str = None):
+    BATCH_SIZE = 32
 
-        self.ollama_url = ollama_url or config.OLLAMA_URL
-        self.model = model or config.EMBED_MODEL_NAME
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or config.EMBED_MODEL_NAME
 
-        print(f"[embedder] Connecting to Ollama for '{self.model}' embeddings...")
-        try:
-            test = self._call_ollama(["startup dimension check"])
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                f"Cannot connect to Ollama at {self.ollama_url}.\n"
-                "Make sure Ollama is running: ollama serve\n"
-                f"Then pull the model:        ollama pull {self.model}"
-            )
+        print(f"[embedder] Loading '{self.model_name}' from HuggingFace (in-process)...")
+        token = config.HF_TOKEN or None
+        self.model = SentenceTransformer(self.model_name, token=token, device="cpu")
 
-        self.dimension = len(test[0])
+
+        # Detect dimension with a startup test
+        test = self.model.encode(["startup dimension check"], convert_to_numpy=True)
+        self.dimension = test.shape[1]
         print(f"[embedder] Ready. Vector dimension: {self.dimension}")
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    BATCH_SIZE = 32  # texts per Ollama request — lower if you get timeouts
-
     def embed(self, texts: list[str], mode: str = "document") -> list[list[float]]:
         """
-        Embed texts in small batches to avoid Ollama timeouts on large documents.
+        Embed texts in batches and return a list of float vectors.
+        The `mode` argument is kept for API compatibility but is unused
+        (sentence-transformers handles query/document symmetry internally).
         """
         if not texts:
             return []
@@ -43,22 +47,9 @@ class Embedder:
             batch = texts[start : start + self.BATCH_SIZE]
             end = min(start + self.BATCH_SIZE, total)
             print(f"[embedder] Embedding {end}/{total}...", end="\r", flush=True)
-            all_embeddings.extend(self._call_ollama(batch))
+            vecs = self.model.encode(batch, convert_to_numpy=True)
+            all_embeddings.extend(vecs.tolist())
 
         if total > self.BATCH_SIZE:
             print()  # newline after progress line
         return all_embeddings
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _call_ollama(self, texts: list[str]) -> list[list[float]]:
-
-        resp = requests.post(
-            f"{self.ollama_url}/api/embed",
-            json={"model": self.model, "input": texts},
-            timeout=300,  # 5 min per batch
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"]

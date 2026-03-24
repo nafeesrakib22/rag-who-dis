@@ -56,6 +56,8 @@ WEAVIATE_COLLECTION_NAME = "RagChunks"
 HYBRID_ALPHA = float(os.environ.get("HYBRID_ALPHA", 0.7))
 
 # --- Models configuration ---
-EMBED_MODEL_NAME = "embeddinggemma"
+EMBED_MODEL_NAME = "google/embeddinggemma-300m"
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 RERANK_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+

@@ -1,17 +1,16 @@
 import SourceCard from './SourceCard'
 
-export default function RetrievalTrace({ stages, query }) {
+export default function RetrievalTrace({ stages, query, onClose }) {
     if (!stages) return null
 
     const initial = stages.initial || []
     const reranked = stages.reranked || []
 
-    // Helper to check if a chunk from initial stage made it to the top reranked
     const isWinner = (chunk) =>
         reranked.some(r => r.chunk_index === chunk.chunk_index && r.source === chunk.source)
 
-    return (
-        <div className="retrieval-trace standalone">
+    const inner = (
+        <>
             <section className="trace-section">
                 <div className="section-header">
                     <h4>Stage 1: Hybrid Search</h4>
@@ -43,6 +42,27 @@ export default function RetrievalTrace({ stages, query }) {
                     ))}
                 </div>
             </section>
-        </div>
+        </>
+    )
+
+    // Side-panel mode (used from chat view)
+    if (onClose) {
+        return (
+            <aside className="retrieval-trace">
+                <div className="trace-header">
+                    <div>
+                        <h3>Retrieval Trace</h3>
+                        <p className="trace-query">"{query.length > 60 ? query.slice(0, 57) + '…' : query}"</p>
+                    </div>
+                    <button className="close-btn" onClick={onClose} title="Close">×</button>
+                </div>
+                <div className="trace-content">{inner}</div>
+            </aside>
+        )
+    }
+
+    // Standalone mode (used from retrieval tab)
+    return (
+        <div className="retrieval-trace standalone">{inner}</div>
     )
 }
