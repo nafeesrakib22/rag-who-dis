@@ -10,7 +10,9 @@ export default function App() {
   // ── Shared state ───────────────────────────────────────────
   const [chunkCount, setChunkCount] = useState(null)
   const [hybridAlpha, setHybridAlpha] = useState(0.7)
+  const [useReranker, setUseReranker] = useState(true)
   const [toast, setToast] = useState(null)
+
 
   // ── Chat state ──────────────────────────────────────────────
   const [messages, setMessages] = useState([])
@@ -36,8 +38,10 @@ export default function App() {
       const data = await res.json()
       setChunkCount(data.chunk_count)
       setHybridAlpha(data.hybrid_alpha)
+      if (data.use_reranker !== undefined) setUseReranker(data.use_reranker)
     } catch { /* ignore */ }
   }
+
 
   // ── Chat handlers ───────────────────────────────────────────
   const handleSend = async (question) => {
@@ -129,6 +133,21 @@ export default function App() {
     }
   }
 
+  const updateReranker = async (val) => {
+    setUseReranker(val)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_reranker: val })
+      })
+      if (!res.ok) throw new Error('Failed to update reranker setting')
+    } catch (e) {
+      showToast(`❌ Error: ${e.message}`, 'error')
+    }
+  }
+
+
   const handleClear = async () => {
     try {
       await fetch('/api/clear', { method: 'POST' })
@@ -146,10 +165,13 @@ export default function App() {
       <Sidebar
         chunkCount={chunkCount}
         hybridAlpha={hybridAlpha}
+        useReranker={useReranker}
         onAlphaChange={updateHybridAlpha}
+        onRerankerChange={updateReranker}
         onIngest={handleIngest}
         onClear={handleClear}
       />
+
 
       <div className="main-area">
         {/* ── Tab bar ── */}

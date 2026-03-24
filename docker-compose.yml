@@ -63,6 +63,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        - HF_TOKEN=${HF_TOKEN}
+
     container_name: rag_backend
     env_file:
       - .env
@@ -71,8 +74,7 @@ services:
       WEAVIATE_HOST: weaviate
       OLLAMA_URL: http://ollama:11434
       HF_TOKEN: ${HF_TOKEN}
-    volumes:
-      - hf_cache:/root/.cache/huggingface  # avoids re-downloading the model on restart
+
     ports:
       - "8000:8000"
     depends_on:
@@ -98,4 +100,4 @@ services:
 # ── Named volumes ──────────────────────────────────────────────────────────
 volumes:
   ollama_data: # persists downloaded Ollama models
-  hf_cache:    # persists HuggingFace model downloads (avoids re-downloading embeddinggemma)
+

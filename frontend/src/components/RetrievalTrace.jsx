@@ -34,14 +34,25 @@ export default function RetrievalTrace({ stages, query, onClose }) {
             <section className="trace-section">
                 <div className="section-header">
                     <h4>Stage 2: Cross-Encoder Reranked</h4>
-                    <span className="count-pill">{reranked.length} winners</span>
+                    {reranked.length > 0 ? (
+                        <span className="count-pill">{reranked.length} winners</span>
+                    ) : (
+                        <span className="count-pill disabled" style={{ background: 'var(--border)', color: 'var(--text-dim)' }}>Disabled</span>
+                    )}
                 </div>
                 <div className="trace-list">
-                    {reranked.map(src => (
-                        <SourceCard key={src.n} source={src} query={query} />
-                    ))}
+                    {reranked.length > 0 ? (
+                        reranked.map(src => (
+                            <SourceCard key={src.n} source={src} query={query} />
+                        ))
+                    ) : (
+                        <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-dim)', fontSize: '13px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+                            🚫 Stage 2 re-ranking is bypassed
+                        </div>
+                    )}
                 </div>
             </section>
+
         </>
     )
 

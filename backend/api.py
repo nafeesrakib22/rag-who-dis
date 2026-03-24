@@ -82,9 +82,12 @@ class ChatResponse(BaseModel):
 class StatusResponse(BaseModel):
     chunk_count: int
     hybrid_alpha: float
+    use_reranker: bool
 
 class SettingsRequest(BaseModel):
-    hybrid_alpha: float
+    hybrid_alpha: float | None = None
+    use_reranker: bool | None = None
+
 
 
 # ---------------------------------------------------------------------------
@@ -142,46 +145,63 @@ async def status():
     """Return how many chunks are in the vector store."""
     return StatusResponse(
         chunk_count=pipeline.store.count(),
-        hybrid_alpha=config.HYBRID_ALPHA
+        hybrid_alpha=config.HYBRID_ALPHA,
+        use_reranker=config.USE_RERANKER
     )
+
 @app.post("/api/settings")
 async def update_settings(req: SettingsRequest):
     """Update system settings and persist them to .env file."""
     try:
-        # Update in memory config
         from backend.core import config as cfg
-        cfg.HYBRID_ALPHA = req.hybrid_alpha
         
+        # Update memory config
+        if req.hybrid_alpha is not None:
+            cfg.HYBRID_ALPHA = req.hybrid_alpha
+        if req.use_reranker is not None:
+            cfg.USE_RERANKER = req.use_reranker
+            
         # Update .env file
         env_path = Path(".env")
         lines = []
-        found = False
-        
+        updates = {}
+        if req.hybrid_alpha is not None:
+            updates["HYBRID_ALPHA"] = str(req.hybrid_alpha)
+        if req.use_reranker is not None:
+            updates["USE_RERANKER"] = "True" if req.use_reranker else "False"
+
         if env_path.exists():
             with open(env_path, "r") as f:
                 for line in f:
-                    if line.startswith("HYBRID_ALPHA="):
-                        lines.append(f"HYBRID_ALPHA={req.hybrid_alpha}\n")
-                        found = True
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#") or "=" not in stripped:
+                        lines.append(line)
+                        continue
+                    key, _, _ = stripped.partition("=")
+                    if key.strip() in updates:
+                        lines.append(f"{key.strip()}={updates.pop(key.strip())}\n")
                     else:
                         lines.append(line)
         
-        if not found:
-            # Ensure newline if file isn't empty and doesn't end with one
+        for k, v in updates.items():
             if lines and not lines[-1].endswith("\n"):
                 lines[-1] += "\n"
-            lines.append(f"HYBRID_ALPHA={req.hybrid_alpha}\n")
+            lines.append(f"{k}={v}\n")
             
         with open(env_path, "w") as f:
             f.writelines(lines)
             
-        print(f"[api] Updated HYBRID_ALPHA to {req.hybrid_alpha} persistently.")
-        return {"message": "Settings updated.", "hybrid_alpha": cfg.HYBRID_ALPHA}
+        return {
+            "message": "Settings updated.",
+            "hybrid_alpha": cfg.HYBRID_ALPHA,
+            "use_reranker": cfg.USE_RERANKER
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/clear")
+
 async def clear():
     """Wipe all chunks from the vector store."""
     pipeline.store.clear()
@@ -207,7 +227,11 @@ async def retrieve(req: RetrieveRequest):
             query_text=req.question,
         )
         # Stage 2 — rerank
-        reranked = pipeline.reranker.rerank(req.question, candidates, top_n=cfg.TOP_K_RESULTS)
+        if cfg.USE_RERANKER:
+            reranked = pipeline.reranker.rerank(req.question, candidates, top_n=cfg.TOP_K_RESULTS)
+        else:
+            reranked = []
+
 
         def fmt(chunks):
             return [

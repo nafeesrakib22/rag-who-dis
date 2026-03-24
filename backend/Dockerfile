@@ -16,9 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the HuggingFace reranker model into the image layer
-# (avoids ~550 MB download at container startup)
+# Pre-download the HuggingFace models into the image layer
+ARG HF_TOKEN
+RUN HF_TOKEN=$HF_TOKEN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('google/embeddinggemma-300m')"
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('BAAI/bge-reranker-v2-m3')"
+
 
 # Copy the rest of the project
 COPY . .

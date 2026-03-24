@@ -47,6 +47,8 @@ SEMANTIC_PERCENTILE_THRESHOLD = 95
 # --- Retrieval configuration ---
 RERANK_CANDIDATES = 20
 TOP_K_RESULTS = 5
+USE_RERANKER = os.environ.get("USE_RERANKER", "True").lower() == "true"
+
 
 # --- Weaviate configuration ---
 WEAVIATE_HOST = os.environ.get("WEAVIATE_HOST", "localhost")

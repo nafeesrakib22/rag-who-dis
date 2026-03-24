@@ -116,7 +116,15 @@ class RAGPipeline:
             return {"answer": "No relevant content found in the knowledge base.", "sources": []}
 
         # Stage 2 — Cross-encoder re-ranking
-        retrieved_chunks = self.reranker.rerank(question, candidates, top_n=config.TOP_K_RESULTS)
+        if config.USE_RERANKER:
+            retrieved_chunks = self.reranker.rerank(question, candidates, top_n=config.TOP_K_RESULTS)
+        else:
+            print("[rag] Stage 2: Re-ranking bypassed (USE_RERANKER=False)")
+            retrieved_chunks = candidates[:config.TOP_K_RESULTS]
+            # Ensure any stale rerank scores from previous iterations or candidates are cleared
+            for c in retrieved_chunks:
+                c["rerank_score"] = None
+
 
         print(f"[rag] Final {len(retrieved_chunks)} chunks after re-ranking.")
 

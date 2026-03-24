@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 
-export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear }) {
+export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear, useReranker, onRerankerChange }) {
+
     const fileRef = useRef(null)
     const [busy, setBusy] = useState(false)
     const [drag, setDrag] = useState(false)
@@ -89,6 +90,23 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
                     </div>
                 </div>
             </div>
+
+            {/* Reranker Toggle */}
+            <div className="sidebar-section">
+                <label>Re-ranking</label>
+                <div className="alpha-control">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', textTransform: 'none', fontSize: '13px', color: 'var(--text)' }}>
+                        <input
+                            type="checkbox"
+                            checked={useReranker ?? true}
+                            onChange={(e) => onRerankerChange(e.target.checked)}
+                            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                        />
+                        Enable Stage 2 Cross-Encoder
+                    </label>
+                </div>
+            </div>
+
 
             {/* Actions */}
             <div className="sidebar-section" style={{ marginTop: 'auto' }}>
