@@ -86,7 +86,7 @@ class RAGPipeline:
 
         print(f"\n✅ Ingestion complete! '{file_path}' is now searchable.")
 
-    def ask(self, question: str) -> dict:
+    def ask(self, question: str, history: list[dict] = None) -> dict:
         """
         Answer a question using retrieved context from Weaviate.
         """
@@ -94,15 +94,38 @@ class RAGPipeline:
         print(f"QUERY: {question}")
         print('='*60)
 
+        history = history or []
+        recent_history = history[-3:]
+        past_history = history[:-3]
+
+        summary = ""
+        selected_past = []
+        condensed_query = question
+
+        if history:
+            print(f"[rag] Analyzing context from {len(history)} previous turns...")
+            # 1. Summarize older turns
+            if past_history:
+                summary = self._get_conversation_summary(past_history)
+            
+            # 2. Semantic search past turns
+            initial_vector = self.embedder.embed([question], mode="query")[0]
+            selected_past = self._get_relevant_past_messages(initial_vector, past_history)
+            
+            # 3. Condense into standalone string
+            condensed_query = self._condense_query(summary, selected_past, recent_history, question)
+            print(f"[rag] Condensed Standalone Query: '{condensed_query}'")
+
         if self.store.count() == 0:
             return {
                 "answer": "The knowledge base is empty. Please ingest a document first.",
                 "sources": [],
             }
 
-        # Step 1: Embed the question
-        print("[rag] Embedding question...")
-        query_vector = self.embedder.embed([question], mode="query")[0]
+        # Step 1: Embed the question (condensed if available)
+        print(f"[rag] Embedding query: '{condensed_query}'...")
+        query_vector = self.embedder.embed([condensed_query], mode="query")[0]
+
 
         # Stage 1 — Hybrid search
         print(f"[rag] Stage 1: hybrid retrieval of top {config.RERANK_CANDIDATES} candidates...")
@@ -129,7 +152,8 @@ class RAGPipeline:
         print(f"[rag] Final {len(retrieved_chunks)} chunks after re-ranking.")
 
         # Step 3: Build the grounded prompt
-        prompt = self._build_prompt(question, retrieved_chunks)
+        prompt = self._build_prompt(question, retrieved_chunks, summary=summary, selected_past=selected_past, recent_history=recent_history)
+
 
         # Step 4: Generate answer via LLM Service
         try:
@@ -179,10 +203,68 @@ class RAGPipeline:
             }
         }
 
-    def _build_prompt(self, question: str, chunks: list[dict]) -> str:
+    def _get_conversation_summary(self, past: list[dict]) -> str:
+        if not past: return ""
+        text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in past])
+        prompt = f"Summarise the key topics, facts, and decisions discussed in these previous conversation turns for brief context reference:\n\n{text}\n\nSUMMARY:"
+        try:
+            return self.llm.generate_content(prompt)
+        except Exception as e:
+            print(f"[rag] Error summarizing: {e}")
+            return ""
+
+    def _get_relevant_past_messages(self, query_vector: list[float], past: list[dict], threshold=0.75) -> list[dict]:
+        if not past: return []
+        import numpy as np
+        def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        selected = []
+        for m in past:
+            try:
+                # Embed text to compare
+                m_vec = self.embedder.embed([m['content']], mode="query")[0]
+                if cosine(query_vector, m_vec) >= threshold:
+                    selected.append(m)
+            except: pass
+        return selected
+
+    def _condense_query(self, summary: str, selected: list[dict], recent: list[dict], question: str) -> str:
+        context = []
+        if summary: context.append(f"CONVERSATION SUMMARY:\n{summary}")
+        if selected:
+            context.append("RELEVANT PAST STATEMENTS:")
+            for m in selected: context.append(f"- {m['role']}: {m['content']}")
+        context.append("RECENT TURNS:\n" + "\n".join([f"{m['role']}: {m['content']}" for m in recent]))
+        
+        prompt = f"""Given the conversation context and latest question below, formulate ONE Standalone Search Query for a document database that captures exactly what information is requested. Do NOT answer the question. Only reply with the search string.
+
+---
+{chr(10).join(context)}
+---
+
+Latest follow-up question: {question}
+
+STANDALONE SEARCH QUERY:"""
+        try:
+            return self.llm.generate_content(prompt)
+        except:
+            return question
+
+    def _build_prompt(self, question: str, chunks: list[dict], summary: str = "", selected_past: list[dict] = None, recent_history: list[dict] = None) -> str:
         """
         Build a grounded prompt for the LLM.
         """
+        history_parts = []
+        if summary:
+            history_parts.append(f"SUMMARY OF PREVIOUS CONVERSATION:\n{summary}")
+        if selected_past:
+            history_parts.append("RELEVANT PAST STATEMENTS:")
+            for m in selected_past:
+                history_parts.append(f"- {m['role'].capitalize()}: {m['content']}")
+        if recent_history:
+            history_parts.append("RECENT TURNS:\n" + "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in recent_history]))
+        
+        history_block = "\n\n---\n\n".join(history_parts) if history_parts else ""
+
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             label = f"[Source {i}] ({chunk['source']}, page {chunk['page']})"
@@ -190,21 +272,27 @@ class RAGPipeline:
 
         context_block = "\n\n---\n\n".join(context_parts)
 
-        prompt = f"""You are a helpful assistant that answers questions based ONLY on the provided context.
+        prompt = f"""You are a helpful assistant that answers questions based ONLY on the provided context and conversation history below.
  
  Rules:
- - Base your answer SOLELY on the context below. Do not use outside knowledge.
- - Answer in the SAME LANGUAGE as the question (e.g., if the question is in Bangla, the answer must be in Bangla).
- - If the context is in a different language than the question, translate the information into the question's language.
+ - Base your answer SOLELY on the provided context. Do not use outside knowledge.
+ - Answer in the SAME LANGUAGE as the question.
  - Cite your sources inline using [Source N] notation.
  - If the answer cannot be found in the context, say: "I don't have enough information in the provided documents to answer this."
  
- CONTEXT:
- {context_block}
+{history_block}
+
+---
+
+CONTEXT FROM DOCUMENTS:
+{context_block}
  
- QUESTION:
- {question}
+---
  
- ANSWER:"""
+QUESTION:
+{question}
+ 
+ANSWER:"""
 
         return prompt
+

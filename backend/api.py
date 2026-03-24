@@ -60,8 +60,14 @@ app.add_middleware(
 # Request / response models
 # ---------------------------------------------------------------------------
 
+class MessageModel(BaseModel):
+    role: str # 'user' or 'assistant'
+    content: str
+
 class ChatRequest(BaseModel):
     question: str
+    history: list[MessageModel] = []
+
 
 class SourceModel(BaseModel):
     n: int
@@ -100,7 +106,10 @@ async def chat(req: ChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
     try:
-        result = pipeline.ask(req.question)
+        # Convert Pydantic history objects to plain dicts for the core pipeline
+        history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+        result = pipeline.ask(req.question, history=history_dicts)
+
         return ChatResponse(
             message_id=str(uuid.uuid4()),
             answer=result["answer"],
