@@ -25,9 +25,3 @@ opencv-python-headless>=4.9.0
 
 # --- LLM / Google AI ---
 google-genai>=1.0.0
-
-# --- HTTP Client (for Ollama) ---
-requests>=2.31.0
-
-# --- Config ---
-python-dotenv>=1.0.1
