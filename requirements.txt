@@ -25,3 +25,6 @@ opencv-python-headless>=4.9.0
 
 # --- LLM / Google AI ---
 google-genai>=1.0.0
+
+# --- Local LLM (used when LLM_PROVIDER=local) ---
+litert-lm

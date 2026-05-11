@@ -1,7 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Sidebar from './components/Sidebar'
 import ChatPanel from './components/ChatPanel'
 import RetrievalTrace from './components/RetrievalTrace'
+
+// Generate a UUID v4 for session identification
+function generateSessionId() {
+  return crypto.randomUUID()
+}
 
 export default function App() {
   // ── View mode ──────────────────────────────────────────────
@@ -11,9 +16,11 @@ export default function App() {
   const [chunkCount, setChunkCount] = useState(null)
   const [hybridAlpha, setHybridAlpha] = useState(0.7)
   const [useReranker, setUseReranker] = useState(true)
+  const [llmProvider, setLlmProvider] = useState('gemini')
   const [toast, setToast] = useState(null)
 
-
+  // ── Session ID — resets on page refresh or New Chat ────────
+  const [sessionId, setSessionId] = useState(() => generateSessionId())
   // ── Chat state ──────────────────────────────────────────────
   const [messages, setMessages] = useState([])
   const [chatLoading, setChatLoading] = useState(false)
@@ -39,6 +46,7 @@ export default function App() {
       setChunkCount(data.chunk_count)
       setHybridAlpha(data.hybrid_alpha)
       if (data.use_reranker !== undefined) setUseReranker(data.use_reranker)
+      if (data.llm_provider) setLlmProvider(data.llm_provider)
     } catch { /* ignore */ }
   }
 
@@ -54,7 +62,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           question, 
-          history: messages.map(m => ({ role: m.role, content: m.content })) 
+          history: messages.map(m => ({ role: m.role, content: m.content })),
+          session_id: sessionId,
         }),
       })
       const data = await res.json()
@@ -82,8 +91,17 @@ export default function App() {
 
   const handleViewTrace = (msgId) => setTraceMessageId(msgId)
   const handleCloseTrace = () => setTraceMessageId(null)
-
   const traceMessage = messages.find(m => m.id === traceMessageId)
+
+  // ── New Chat — resets session and clears messages ───────────
+  const handleNewChat = async () => {
+    setMessages([])
+    setTraceMessageId(null)
+    const newId = generateSessionId()
+    setSessionId(newId)
+    // Explicitly notify backend to free the old local LLM session
+    try { await fetch('/api/reset-session', { method: 'POST' }) } catch { /* ignore */ }
+  }
 
   // ── Retrieve handlers ───────────────────────────────────────
   const handleSearch = async (e) => {
@@ -170,10 +188,12 @@ export default function App() {
         chunkCount={chunkCount}
         hybridAlpha={hybridAlpha}
         useReranker={useReranker}
+        llmProvider={llmProvider}
         onAlphaChange={updateHybridAlpha}
         onRerankerChange={updateReranker}
         onIngest={handleIngest}
         onClear={handleClear}
+        onNewChat={handleNewChat}
       />
 
 

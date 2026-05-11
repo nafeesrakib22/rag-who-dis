@@ -46,6 +46,11 @@ services:
       # Override localhost values so containers resolve each other by service name
       WEAVIATE_HOST: weaviate
       HF_TOKEN: ${HF_TOKEN}
+      LOCAL_MODEL_PATH: /models/gemma-e2b
+
+    volumes:
+      # Bind-mount the local LLM model directory (only needed when LLM_PROVIDER=local)
+      - /home/moriarty4k/.litert-lm/models:/models:ro
 
     ports:
       - "8000:8000"

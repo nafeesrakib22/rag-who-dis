@@ -4,28 +4,16 @@ rag.py — The Orchestrator (Retrieval-Augmented Generation)
 This module ties everything together:
 
   INGEST PIPELINE:
-    File → loader → pages → chunker → chunks → embedder → embeddings → ChromaDB
+    File → loader → pages → chunker → chunks → embedder → embeddings → Weaviate
 
-  QUERY PIPELINE:
-    Question → embedder → query_vector → ChromaDB → top-k chunks
-    → build prompt → Gemini API → answer with citations
+  QUERY PIPELINE (Gemini mode):
+    Question → condense with history → embedder → Weaviate hybrid search
+    → reranker → build full prompt (with history block) → Gemini API → answer
 
-WHY RAG AT ALL?
-  LLMs are trained on data up to a cutoff date and don't know about YOUR
-  documents. RAG solves this by retrieving relevant snippets from your DB
-  and injecting them into the prompt as context. The LLM then generates
-  an answer grounded in that context — reducing hallucinations and allowing
-  it to cite sources.
-
-THE PROMPT TEMPLATE:
-  The quality of RAG depends heavily on the prompt you give the LLM.
-  Our template:
-    1. Tells the model to ONLY use the provided context.
-    2. Provides numbered context snippets with their source labels.
-    3. Asks it to cite sources using [Source N] notation.
-    4. Instructs it to say "I don't know" if the answer isn't in context.
-  This grounding instructions is critical — without them, LLMs will
-  just answer from their training data (ignoring your documents).
+  QUERY PIPELINE (Local LLM mode):
+    Question → embedder → Weaviate hybrid search → reranker
+    → inject context into stateful KV cache session → gemma-4-E2B-it → answer
+    (History lives in the model's KV cache — no re-injection needed)
 """
 
 from . import config
@@ -34,7 +22,7 @@ from .chunker import chunk_documents, SemanticChunker
 from .embedder import Embedder
 from .weaviate_store import WeaviateStore
 from .reranker import Reranker
-from .llm import LLMService
+from .llm import get_llm_service
 
 
 class RAGPipeline:
@@ -51,7 +39,7 @@ class RAGPipeline:
             max_chunk_size=config.CHUNK_SIZE,
         )
         self.reranker = Reranker()
-        self.llm = LLMService()
+        self.llm = get_llm_service()
 
     def ingest(self, file_path: str) -> None:
         """
@@ -61,13 +49,11 @@ class RAGPipeline:
         print(f"INGESTING: {file_path}")
         print('='*60)
 
-        # Step 1: Load the document into pages
         pages = load_document(file_path)
 
-        # Step 2: Split pages into overlapping chunks
         chunks = chunk_documents(
-            pages, 
-            chunk_size=config.CHUNK_SIZE, 
+            pages,
+            chunk_size=config.CHUNK_SIZE,
             overlap=config.CHUNK_OVERLAP,
             semantic_chunker=self.semantic_chunker
         )
@@ -76,45 +62,46 @@ class RAGPipeline:
             print("[rag] No chunks produced. The document may be empty.")
             return
 
-        # Step 3: Embed all chunk texts in one batch
         texts = [c["text"] for c in chunks]
         print(f"[rag] Embedding {len(texts)} chunks...")
         embeddings = self.embedder.embed(texts)
 
-        # Step 4: Store chunks + embeddings in Weaviate
         self.store.add_chunks(chunks, embeddings)
 
         print(f"\n✅ Ingestion complete! '{file_path}' is now searchable.")
 
-    def ask(self, question: str, history: list[dict] = None) -> dict:
+    def ask(self, question: str, history: list[dict] = None, session_id: str = None) -> dict:
         """
         Answer a question using retrieved context from Weaviate.
+
+        - Gemini mode: history is summarised + injected as text into the prompt.
+        - Local mode:  history lives in the model's KV cache; only new context
+                       and the question are sent each turn.
         """
         print(f"\n{'='*60}")
-        print(f"QUERY: {question}")
+        print(f"QUERY: {question}  [provider={config.LLM_PROVIDER}]")
         print('='*60)
 
         history = history or []
-        recent_history = history[-3:]
-        past_history = history[:-3]
 
+        # ── Gemini path: condense query using conversation history ─────────────
+        condensed_query = question
         summary = ""
         selected_past = []
-        condensed_query = question
+        recent_history = history[-3:]
 
-        if history:
+        if config.LLM_PROVIDER == "gemini" and history:
+            past_history = history[:-3]
             print(f"[rag] Analyzing context from {len(history)} previous turns...")
-            # 1. Summarize older turns
             if past_history:
                 summary = self._get_conversation_summary(past_history)
-            
-            # 2. Semantic search past turns
             initial_vector = self.embedder.embed([question], mode="query")[0]
             selected_past = self._get_relevant_past_messages(initial_vector, past_history)
-            
-            # 3. Condense into standalone string
             condensed_query = self._condense_query(summary, selected_past, recent_history, question)
-            print(f"[rag] Condensed Standalone Query: '{condensed_query}'")
+            print(f"[rag] Condensed query: '{condensed_query}'")
+
+        # ── Local path: no query condensation (history is in KV cache) ────────
+        # condensed_query remains the raw question
 
         if self.store.count() == 0:
             return {
@@ -122,12 +109,11 @@ class RAGPipeline:
                 "sources": [],
             }
 
-        # Step 1: Embed the question (condensed if available)
+        # ── Step 1: Embed the (possibly condensed) query ───────────────────────
         print(f"[rag] Embedding query: '{condensed_query}'...")
         query_vector = self.embedder.embed([condensed_query], mode="query")[0]
 
-
-        # Stage 1 — Hybrid search
+        # ── Stage 1: Hybrid search ─────────────────────────────────────────────
         print(f"[rag] Stage 1: hybrid retrieval of top {config.RERANK_CANDIDATES} candidates...")
         candidates = self.store.query(
             query_vector,
@@ -138,42 +124,49 @@ class RAGPipeline:
         if not candidates:
             return {"answer": "No relevant content found in the knowledge base.", "sources": []}
 
-        # Stage 2 — Cross-encoder re-ranking
+        # ── Stage 2: Re-ranking ────────────────────────────────────────────────
         if config.USE_RERANKER:
             retrieved_chunks = self.reranker.rerank(question, candidates, top_n=config.TOP_K_RESULTS)
         else:
             print("[rag] Stage 2: Re-ranking bypassed (USE_RERANKER=False)")
             retrieved_chunks = candidates[:config.TOP_K_RESULTS]
-            # Ensure any stale rerank scores from previous iterations or candidates are cleared
             for c in retrieved_chunks:
                 c["rerank_score"] = None
 
-
         print(f"[rag] Final {len(retrieved_chunks)} chunks after re-ranking.")
 
-        # Step 3: Build the grounded prompt
-        prompt = self._build_prompt(question, retrieved_chunks, summary=summary, selected_past=selected_past, recent_history=recent_history)
-
-
-        # Step 4: Generate answer via LLM Service
+        # ── Step 3: Generate answer ────────────────────────────────────────────
         try:
-            answer_text = self.llm.generate_content(prompt)
+            if config.LLM_PROVIDER == "local":
+                # Local: inject context into the stateful KV cache session
+                context_block = self._build_context_block(retrieved_chunks)
+                answer_text = self.llm.chat(
+                    question=question,
+                    context_block=context_block,
+                    session_id=session_id or "default",
+                )
+            else:
+                # Gemini: build full prompt with history block
+                prompt = self._build_prompt(
+                    question, retrieved_chunks,
+                    summary=summary,
+                    selected_past=selected_past,
+                    recent_history=recent_history,
+                )
+                answer_text = self.llm.generate_content(prompt)
         except Exception as e:
-            return {
-                "answer": f"Error calling LLM: {e}",
-                "sources": [],
-            }
+            return {"answer": f"Error calling LLM: {e}", "sources": []}
 
-        # Step 5: Format sources for both stages
+        # ── Step 4: Format source lists for both pipeline stages ───────────────
         stage1_sources = [
             {
                 "n": i + 1,
                 "source": c["source"],
                 "page": c["page"],
                 "chunk_index": c["chunk_index"],
-                "distance":     c["distance"],
+                "distance": c["distance"],
                 "hybrid_score": c.get("hybrid_score"),
-                "text":        c["text"],
+                "text": c["text"],
                 "preview": c["text"][:120] + "..." if len(c["text"]) > 120 else c["text"],
             }
             for i, c in enumerate(candidates)
@@ -185,10 +178,10 @@ class RAGPipeline:
                 "source": c["source"],
                 "page": c["page"],
                 "chunk_index": c["chunk_index"],
-                "distance":     c["distance"],
+                "distance": c["distance"],
                 "hybrid_score": c.get("hybrid_score"),
                 "rerank_score": c.get("rerank_score"),
-                "text":        c["text"],
+                "text": c["text"],
                 "preview": c["text"][:120] + "..." if len(c["text"]) > 120 else c["text"],
             }
             for i, c in enumerate(retrieved_chunks)
@@ -196,65 +189,36 @@ class RAGPipeline:
 
         return {
             "answer": answer_text,
-            "sources": stage2_sources, # Legacy support
+            "sources": stage2_sources,
             "stages": {
                 "initial": stage1_sources,
-                "reranked": stage2_sources
-            }
+                "reranked": stage2_sources,
+            },
         }
 
-    def _get_conversation_summary(self, past: list[dict]) -> str:
-        if not past: return ""
-        text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in past])
-        prompt = f"Summarise the key topics, facts, and decisions discussed in these previous conversation turns for brief context reference:\n\n{text}\n\nSUMMARY:"
-        try:
-            return self.llm.generate_content(prompt)
-        except Exception as e:
-            print(f"[rag] Error summarizing: {e}")
-            return ""
+    def reset_local_session(self) -> None:
+        """Reset the local LLM KV cache session (no-op for Gemini mode)."""
+        if config.LLM_PROVIDER == "local" and hasattr(self.llm, "reset_session"):
+            self.llm.reset_session()
 
-    def _get_relevant_past_messages(self, query_vector: list[float], past: list[dict], threshold=0.75) -> list[dict]:
-        if not past: return []
-        import numpy as np
-        def cosine(a, b): return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-        selected = []
-        try:
-            # Batch embed all past messages at once (much faster on CPU)
-            contents = [m['content'] for m in past]
-            m_vectors = self.embedder.embed(contents, mode="query")
-            for i, m in enumerate(past):
-                if cosine(query_vector, m_vectors[i]) >= threshold:
-                    selected.append(m)
-        except Exception as e:
-            print(f"[rag] Error batch embedding past messages: {e}")
-        return selected
+    # ── Prompt helpers ────────────────────────────────────────────────────────
 
-
-    def _condense_query(self, summary: str, selected: list[dict], recent: list[dict], question: str) -> str:
-        context = []
-        if summary: context.append(f"CONVERSATION SUMMARY:\n{summary}")
-        if selected:
-            context.append("RELEVANT PAST STATEMENTS:")
-            for m in selected: context.append(f"- {m['role']}: {m['content']}")
-        context.append("RECENT TURNS:\n" + "\n".join([f"{m['role']}: {m['content']}" for m in recent]))
-        
-        prompt = f"""Given the conversation context and latest question below, formulate ONE Standalone Search Query for a document database that captures exactly what information is requested. Do NOT answer the question. Only reply with the search string.
-
----
-{chr(10).join(context)}
----
-
-Latest follow-up question: {question}
-
-STANDALONE SEARCH QUERY:"""
-        try:
-            return self.llm.generate_content(prompt)
-        except:
-            return question
-
-    def _build_prompt(self, question: str, chunks: list[dict], summary: str = "", selected_past: list[dict] = None, recent_history: list[dict] = None) -> str:
+    def _build_context_block(self, chunks: list[dict]) -> str:
         """
-        Build a grounded prompt for the LLM.
+        Build the document context block — used by the local LLM path.
+        Injected per-turn alongside the question; not stored in history.
+        """
+        parts = []
+        for i, chunk in enumerate(chunks, 1):
+            label = f"[Source {i}] ({chunk['source']}, page {chunk['page']})"
+            parts.append(f"{label}\n{chunk['text']}")
+        return "\n\n---\n\n".join(parts)
+
+    def _build_prompt(self, question: str, chunks: list[dict], summary: str = "",
+                      selected_past: list[dict] = None, recent_history: list[dict] = None) -> str:
+        """
+        Build a grounded prompt for the Gemini LLM.
+        Includes the full history block (summary + relevant past + recent turns).
         """
         history_parts = []
         if summary:
@@ -264,16 +228,13 @@ STANDALONE SEARCH QUERY:"""
             for m in selected_past:
                 history_parts.append(f"- {m['role'].capitalize()}: {m['content']}")
         if recent_history:
-            history_parts.append("RECENT TURNS:\n" + "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in recent_history]))
-        
+            history_parts.append(
+                "RECENT TURNS:\n" +
+                "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in recent_history])
+            )
+
         history_block = "\n\n---\n\n".join(history_parts) if history_parts else ""
-
-        context_parts = []
-        for i, chunk in enumerate(chunks, 1):
-            label = f"[Source {i}] ({chunk['source']}, page {chunk['page']})"
-            context_parts.append(f"{label}\n{chunk['text']}")
-
-        context_block = "\n\n---\n\n".join(context_parts)
+        context_block = self._build_context_block(chunks)
 
         prompt = f"""You are a helpful assistant that answers questions based ONLY on the provided context and conversation history below.
  
@@ -299,3 +260,69 @@ ANSWER:"""
 
         return prompt
 
+    # ── Gemini-only history helpers ───────────────────────────────────────────
+
+    def _get_conversation_summary(self, past: list[dict]) -> str:
+        if not past:
+            return ""
+        text = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in past])
+        prompt = (
+            "Summarise the key topics, facts, and decisions discussed in these previous "
+            "conversation turns for brief context reference:\n\n"
+            f"{text}\n\nSUMMARY:"
+        )
+        try:
+            return self.llm.generate_content(prompt)
+        except Exception as e:
+            print(f"[rag] Error summarizing: {e}")
+            return ""
+
+    def _get_relevant_past_messages(self, query_vector: list[float],
+                                    past: list[dict], threshold=0.75) -> list[dict]:
+        if not past:
+            return []
+        import numpy as np
+        def cosine(a, b):
+            return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        selected = []
+        try:
+            contents = [m["content"] for m in past]
+            m_vectors = self.embedder.embed(contents, mode="query")
+            for i, m in enumerate(past):
+                if cosine(query_vector, m_vectors[i]) >= threshold:
+                    selected.append(m)
+        except Exception as e:
+            print(f"[rag] Error batch embedding past messages: {e}")
+        return selected
+
+    def _condense_query(self, summary: str, selected: list[dict],
+                        recent: list[dict], question: str) -> str:
+        """
+        Reformulate a follow-up question into a standalone search query.
+        Only called in Gemini mode — local mode relies on the KV cache.
+        """
+        context = []
+        if summary:
+            context.append(f"CONVERSATION SUMMARY:\n{summary}")
+        if selected:
+            context.append("RELEVANT PAST STATEMENTS:")
+            for m in selected:
+                context.append(f"- {m['role']}: {m['content']}")
+        context.append(
+            "RECENT TURNS:\n" +
+            "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+        )
+
+        prompt = f"""Given the conversation context and latest question below, formulate ONE Standalone Search Query for a document database that captures exactly what information is requested. Do NOT answer the question. Only reply with the search string.
+
+---
+{chr(10).join(context)}
+---
+
+Latest follow-up question: {question}
+
+STANDALONE SEARCH QUERY:"""
+        try:
+            return self.llm.generate_content(prompt)
+        except Exception:
+            return question

@@ -67,6 +67,7 @@ class MessageModel(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     history: list[MessageModel] = []
+    session_id: str | None = None  # required for local LLM mode; ignored by Gemini mode
 
 
 class SourceModel(BaseModel):
@@ -89,6 +90,7 @@ class StatusResponse(BaseModel):
     chunk_count: int
     hybrid_alpha: float
     use_reranker: bool
+    llm_provider: str  # 'gemini' or 'local'
 
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
@@ -106,9 +108,12 @@ async def chat(req: ChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
     try:
-        # Convert Pydantic history objects to plain dicts for the core pipeline
         history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
-        result = pipeline.ask(req.question, history=history_dicts)
+        result = pipeline.ask(
+            req.question,
+            history=history_dicts,
+            session_id=req.session_id,
+        )
 
         return ChatResponse(
             message_id=str(uuid.uuid4()),
@@ -155,7 +160,8 @@ async def status():
     return StatusResponse(
         chunk_count=pipeline.store.count(),
         hybrid_alpha=config.HYBRID_ALPHA,
-        use_reranker=config.USE_RERANKER
+        use_reranker=config.USE_RERANKER,
+        llm_provider=config.LLM_PROVIDER,
     )
 
 @app.post("/api/settings")
@@ -210,11 +216,21 @@ async def update_settings(req: SettingsRequest):
 
 
 @app.post("/api/clear")
-
 async def clear():
     """Wipe all chunks from the vector store."""
     pipeline.store.clear()
     return {"message": "Knowledge base cleared.", "chunk_count": 0}
+
+
+@app.post("/api/reset-session")
+async def reset_session():
+    """
+    Reset the local LLM KV cache session.
+    Call this when the user starts a new chat or refreshes.
+    No-op when LLM_PROVIDER=gemini.
+    """
+    pipeline.reset_local_session()
+    return {"message": "Session reset.", "llm_provider": config.LLM_PROVIDER}
 
 
 class RetrieveRequest(BaseModel):

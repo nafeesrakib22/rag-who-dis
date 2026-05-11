@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 
-export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear, useReranker, onRerankerChange }) {
+export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear, useReranker, onRerankerChange, llmProvider, onNewChat }) {
 
     const fileRef = useRef(null)
     const [busy, setBusy] = useState(false)
@@ -111,6 +111,9 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
             {/* Actions */}
             <div className="sidebar-section" style={{ marginTop: 'auto' }}>
                 <label>Actions</label>
+                <button className="btn btn-primary" onClick={onNewChat} style={{ marginBottom: '8px' }}>
+                    ✨ New Chat
+                </button>
                 <button className="btn btn-ghost" onClick={onClear}>
                     🗑 Clear knowledge base
                 </button>
@@ -119,9 +122,9 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
             {/* Stack info */}
             <div style={{ fontSize: '11px', color: 'var(--text-dim)', padding: '0 8px', lineHeight: 1.8 }}>
                 <div>📦 Weaviate (hybrid search)</div>
-                <div>🧠 embeddinggemma (Ollama)</div>
-                <div>🔀 ms-marco cross-encoder</div>
-
+                <div>🧠 embeddinggemma-300m (HF)</div>
+                <div>🔀 bge-reranker-v2-m3</div>
+                <div>🤖 LLM: <strong>{llmProvider === 'local' ? 'gemma-4-E2B (local)' : 'Gemini API'}</strong></div>
             </div>
         </aside>
     )
