@@ -1,32 +1,5 @@
 services:
 
-  # ── Ollama (local LLM / embedding engine) ─────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: rag_ollama
-    volumes:
-      - ollama_data:/root/.ollama # model files persist across restarts
-    entrypoint: [ "/bin/bash", "-c" ]
-    command:
-      - |
-        ollama serve &
-        SERVE_PID=$$!
-        echo '[ollama] Waiting for Ollama to be ready...'
-        until ollama list > /dev/null 2>&1; do sleep 2; done
-        echo '[ollama] Pulling embeddinggemma model...'
-        ollama pull embeddinggemma
-        echo '[ollama] Ready.'
-        wait $$SERVE_PID
-    ports:
-      - "11434:11434"
-    healthcheck:
-      test: [ "CMD", "ollama", "list" ]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 15s
-    restart: unless-stopped
-
   # ── Weaviate (vector store) ────────────────────────────────────────────────
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.29.2
@@ -72,15 +45,12 @@ services:
     environment:
       # Override localhost values so containers resolve each other by service name
       WEAVIATE_HOST: weaviate
-      OLLAMA_URL: http://ollama:11434
       HF_TOKEN: ${HF_TOKEN}
 
     ports:
       - "8000:8000"
     depends_on:
       weaviate:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     restart: unless-stopped
 
@@ -96,8 +66,4 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-# ── Named volumes ──────────────────────────────────────────────────────────
-volumes:
-  ollama_data: # persists downloaded Ollama models
 
