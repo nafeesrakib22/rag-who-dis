@@ -20,16 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Using snapshot_download (files only) instead of loading models into memory,
 # which avoids the RAM spike that causes OOM crashes during docker build.
 ARG HF_TOKEN
-RUN python -c "
-from huggingface_hub import snapshot_download
-snapshot_download('google/embeddinggemma-300m', token='$HF_TOKEN')
-print('embeddinggemma-300m downloaded.')
-"
-RUN python -c "
-from huggingface_hub import snapshot_download
-snapshot_download('BAAI/bge-reranker-v2-m3')
-print('bge-reranker-v2-m3 downloaded.')
-"
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('google/embeddinggemma-300m', token='${HF_TOKEN}'); print('embeddinggemma-300m downloaded.')"
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('BAAI/bge-reranker-v2-m3'); print('bge-reranker-v2-m3 downloaded.')"
 
 
 # Copy the rest of the project
