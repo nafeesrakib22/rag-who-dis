@@ -53,7 +53,7 @@ USE_RERANKER = os.environ.get("USE_RERANKER", "True").lower() == "true"
 # 'gemini' → Google Gemini API (requires GOOGLE_API_KEY)
 # 'local'  → On-device gemma-4-E2B-it via litert-lm (no API key needed)
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
-LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/home/moriarty4k/.litert-lm/models/gemma-e2b")
+LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/home/moriarty4k/.litert-lm/models/gemma-e2b/model.litertlm")
 
 
 # --- Weaviate configuration ---
