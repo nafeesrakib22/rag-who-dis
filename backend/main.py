@@ -113,7 +113,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Initialize the pipeline (loads embedder + connects to ChromaDB)
+    # Initialize the pipeline (loads embedder + connects to Weaviate)
     try:
         pipeline = RAGPipeline()
     except EnvironmentError as e:

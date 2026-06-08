@@ -57,14 +57,18 @@ pip install -r requirements.txt
 ```
 
 > **First run:** `sentence-transformers` will download `google/embeddinggemma-300m`
-> (~600 MB) and `BAAI/bge-reranker-v2-m3` (~550 MB) on first backend start.
+> (~1.2 GB) and `BAAI/bge-reranker-v2-m3` (~2.3 GB) on first backend start.
 > They are cached in `~/.cache/huggingface/` and reused on subsequent runs.
 
 ### 4. Start the backend
 
 ```bash
-uvicorn backend.api:app --reload
+uvicorn backend.api:app --reload --reload-exclude weaviate_db
 ```
+
+> **Note (Linux/WSL2):** The `weaviate_db` folder is owned by root (written by Docker).
+> The `--reload-exclude weaviate_db` flag prevents a permission error in the file watcher.
+> Alternatively, drop `--reload` entirely if you don't need auto-reload.
 
 ### 5. Start the frontend
 
@@ -102,7 +106,7 @@ By default it is stored at `~/.litert-lm/models/gemma-e2b`.
 
 ```ini
 LLM_PROVIDER=local
-LOCAL_MODEL_PATH=/home/<your-username>/.litert-lm/models/gemma-e2b
+LOCAL_MODEL_PATH=/home/<your-username>/.litert-lm/models/gemma-e2b/model.litertlm
 ```
 
 ### How local mode works
@@ -113,6 +117,9 @@ LOCAL_MODEL_PATH=/home/<your-username>/.litert-lm/models/gemma-e2b
 - **New Chat** (sidebar button) or a page refresh resets the session and starts fresh.
 - **Query condensation** (`_condense_query`) is skipped — the model already has full
   context via its KV cache, so follow-up questions resolve correctly without reformulation.
+
+> **Linux/WSL2 dependency:** `litert-lm` requires `libGLESv2` even on CPU-only mode.
+> Install it with: `sudo apt-get install -y libgles2`
 
 ### Docker with local mode
 
