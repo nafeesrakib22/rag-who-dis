@@ -3,6 +3,13 @@
 A full-stack RAG system that lets you ingest PDF, Markdown, JSON, and text documents
 and ask questions answered with citations — grounded entirely in your own documents.
 
+## Highlights
+
+- Full-stack RAG app with FastAPI, React, Weaviate, hybrid search, re-ranking, and citation-grounded answers.
+- Supports PDF, Markdown, TXT, and JSON ingestion with OCR fallback for scanned or corrupted PDFs.
+- Includes a Retrieval Trace view to inspect hybrid-search candidates, re-ranked chunks, and source evidence.
+- Supports both Gemini API and local Gemma inference via LiteRT-LM.
+
 ## Stack
 
 | Component | Tool |
