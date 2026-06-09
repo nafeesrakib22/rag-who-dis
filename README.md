@@ -1,12 +1,12 @@
 # RAG System — Retrieval-Augmented Generation
 
-A full-stack RAG system that lets you ingest PDF, Markdown, JSON, and text documents
+A full-stack RAG system that lets you ingest PDF, Markdown, and text documents
 and ask questions answered with citations — grounded entirely in your own documents.
 
 ## Highlights
 
 - Full-stack RAG app with FastAPI, React, Weaviate, hybrid search, re-ranking, and citation-grounded answers.
-- Supports PDF, Markdown, TXT, and JSON ingestion with OCR fallback for scanned or corrupted PDFs.
+- Supports PDF, Markdown, and TXT ingestion with OCR fallback for scanned or corrupted PDFs.
 - Includes a Retrieval Trace view to inspect hybrid-search candidates, re-ranked chunks, and source evidence.
 - Supports both Gemini API and local Gemma inference via LiteRT-LM.
 
@@ -38,7 +38,7 @@ and ask questions answered with citations — grounded entirely in your own docu
 ### 1. Clone & configure environment
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/nafeesrakib22/rag-who-dis.git
 cd rag-who-dis
 
 cp .env.example .env
@@ -116,6 +116,12 @@ LLM_PROVIDER=local
 LOCAL_MODEL_PATH=/home/<your-username>/.litert-lm/models/gemma-e2b/model.litertlm
 ```
 
+Example:
+
+```ini
+LOCAL_MODEL_PATH=/home/yourname/.litert-lm/models/gemma-e2b/model.litertlm
+```
+
 ### How local mode works
 
 - **History** is managed by the model's KV cache. Each conversation session is kept
@@ -136,6 +142,13 @@ Update `docker-compose.yml` if your model path differs from the default:
 ```yaml
 volumes:
   - /home/<your-username>/.litert-lm/models:/models:ro
+```
+
+Example:
+
+```yaml
+volumes:
+  - /home/yourname/.litert-lm/models:/models:ro
 ```
 
 ---
@@ -179,7 +192,7 @@ python -m backend.main clear
 
 ### Ingestion Pipeline
 ```
-Document (PDF / MD / TXT / JSON)
+Document (PDF / MD / TXT)
     → Load          Extract text (with OCR fallback for scanned PDFs)
     → Chunk         Semantic chunking using sentence embeddings
     → Embed         Dense vectors via embeddinggemma-300m (in-process)

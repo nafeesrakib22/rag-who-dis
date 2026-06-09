@@ -53,7 +53,7 @@ USE_RERANKER = os.environ.get("USE_RERANKER", "True").lower() == "true"
 # 'gemini' → Google Gemini API (requires GOOGLE_API_KEY)
 # 'local'  → On-device gemma-4-E2B-it via litert-lm (no API key needed)
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
-LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/home/moriarty4k/.litert-lm/models/gemma-e2b/model.litertlm")
+LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/home/<your-username>/.litert-lm/models/gemma-e2b/model.litertlm")
 
 
 # --- Weaviate configuration ---
@@ -67,4 +67,3 @@ HYBRID_ALPHA = float(os.environ.get("HYBRID_ALPHA", 0.7))
 EMBED_MODEL_NAME = "google/embeddinggemma-300m"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 RERANK_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
-

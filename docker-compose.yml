@@ -50,7 +50,8 @@ services:
 
     volumes:
       # Bind-mount the local LLM model directory (only needed when LLM_PROVIDER=local)
-      - /home/moriarty4k/.litert-lm/models:/models:ro
+      # Example: LOCAL_MODELS_DIR=/home/yourname/.litert-lm/models
+      - ${LOCAL_MODELS_DIR:-/home/<your-username>/.litert-lm/models}:/models:ro
 
     ports:
       - "8000:8000"
@@ -71,4 +72,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
