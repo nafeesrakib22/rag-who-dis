@@ -16,6 +16,8 @@ This module ties everything together:
     (History lives in the model's KV cache — no re-injection needed)
 """
 
+from collections.abc import Iterator
+
 from . import config
 from .loader import load_document
 from .chunker import chunk_documents, SemanticChunker
@@ -195,6 +197,109 @@ class RAGPipeline:
                 "reranked": stage2_sources,
             },
         }
+
+    def prepare_context(
+        self, question: str, history: list[dict] = None, session_id: str = None
+    ) -> dict | None:
+        """
+        Run the full retrieval pipeline (embed → hybrid search → rerank)
+        and return everything needed for generation, WITHOUT calling the LLM.
+
+        Returns None when the knowledge base is empty.
+        """
+        history = history or []
+
+        condensed_query = question
+        summary = ""
+        selected_past = []
+        recent_history = history[-3:]
+
+        if config.LLM_PROVIDER == "gemini" and history:
+            past_history = history[:-3]
+            if past_history:
+                summary = self._get_conversation_summary(past_history)
+            initial_vector = self.embedder.embed([question], mode="query")[0]
+            selected_past = self._get_relevant_past_messages(initial_vector, past_history)
+            condensed_query = self._condense_query(summary, selected_past, recent_history, question)
+
+        if self.store.count() == 0:
+            return None
+
+        query_vector = self.embedder.embed([condensed_query], mode="query")[0]
+
+        candidates = self.store.query(
+            query_vector,
+            n_results=config.RERANK_CANDIDATES,
+            query_text=question,
+        )
+        if not candidates:
+            return None
+
+        if config.USE_RERANKER:
+            retrieved_chunks = self.reranker.rerank(question, candidates, top_n=config.TOP_K_RESULTS)
+        else:
+            retrieved_chunks = candidates[:config.TOP_K_RESULTS]
+            for c in retrieved_chunks:
+                c["rerank_score"] = None
+
+        # Build formatted source dicts
+        def fmt(chunks, include_rerank=False):
+            return [
+                {
+                    "n": i + 1,
+                    "source": c["source"],
+                    "page": c["page"],
+                    "chunk_index": c["chunk_index"],
+                    "hybrid_score": c.get("hybrid_score"),
+                    **({
+                        "rerank_score": c.get("rerank_score"),
+                    } if include_rerank else {}),
+                    "text": c["text"],
+                    "preview": c["text"][:120] + "..." if len(c["text"]) > 120 else c["text"],
+                }
+                for i, c in enumerate(chunks)
+            ]
+
+        return {
+            "question": question,
+            "session_id": session_id,
+            "retrieved_chunks": retrieved_chunks,
+            "candidates": candidates,
+            "summary": summary,
+            "selected_past": selected_past,
+            "recent_history": recent_history,
+            "sources": fmt(retrieved_chunks, include_rerank=True),
+            "stages": {
+                "initial": fmt(candidates),
+                "reranked": fmt(retrieved_chunks, include_rerank=True),
+            },
+        }
+
+    def stream_answer(self, context: dict) -> Iterator[str]:
+        """
+        Given a prepared context dict from prepare_context(), stream the LLM
+        response token-by-token.
+        """
+        chunks = context["retrieved_chunks"]
+        question = context["question"]
+
+        if config.LLM_PROVIDER == "local":
+            context_block = self._build_context_block(chunks)
+            # Local LLM doesn't support streaming — yield the full response
+            answer = self.llm.chat(
+                question=question,
+                context_block=context_block,
+                session_id=context.get("session_id") or "default",
+            )
+            yield answer
+        else:
+            prompt = self._build_prompt(
+                question, chunks,
+                summary=context.get("summary", ""),
+                selected_past=context.get("selected_past", []),
+                recent_history=context.get("recent_history", []),
+            )
+            yield from self.llm.stream_content(prompt)
 
     def reset_local_session(self) -> None:
         """Reset the local LLM KV cache session (no-op for Gemini mode)."""

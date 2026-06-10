@@ -10,6 +10,7 @@ Endpoints:
   POST /api/clear   — wipe the collection
 """
 
+import json
 import os
 import uuid
 import shutil
@@ -17,8 +18,9 @@ import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.core import config
@@ -126,6 +128,65 @@ async def chat(req: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+
+    Event types:
+      sources  — JSON array of source citations (sent once before tokens)
+      token    — a chunk of the generated answer text
+      done     — signals the stream is complete
+      error    — an error occurred
+    """
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    def event_stream():
+        try:
+            history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+            # Retrieve context (everything except LLM generation)
+            context = pipeline.prepare_context(
+                req.question,
+                history=history_dicts,
+                session_id=req.session_id,
+            )
+
+            if context is None:
+                yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
+                yield _sse("sources", "[]")
+                yield _sse("done", "")
+                return
+
+            # Send sources before streaming tokens
+            yield _sse("sources", json.dumps(context["sources"], ensure_ascii=False))
+            yield _sse("stages", json.dumps(context["stages"], ensure_ascii=False))
+
+            # Stream LLM tokens
+            for token in pipeline.stream_answer(context):
+                yield _sse("token", token)
+
+            yield _sse("done", "")
+        except Exception as e:
+            yield _sse("error", str(e))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+        },
+    )
+
+
+def _sse(event: str, data: str) -> str:
+    """Format a single SSE message."""
+    # SSE data lines must not contain bare newlines; encode them
+    escaped = data.replace("\n", "\\n")
+    return f"event: {event}\ndata: {escaped}\n\n"
 
 
 @app.post("/api/ingest")

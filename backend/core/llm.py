@@ -20,6 +20,7 @@ LOCAL LLM SESSION MODEL:
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from google import genai
 from . import config
 
@@ -47,6 +48,10 @@ class BaseLLMService(ABC):
         """Stateless single-turn generation (used for query condensation, summarisation, etc.)"""
         ...
 
+    def stream_content(self, prompt: str, temperature: float = None) -> Iterator[str]:
+        """Stream generation token-by-token. Default falls back to non-streaming."""
+        yield self.generate_content(prompt, temperature)
+
 
 # ── Gemini (cloud, stateless) ─────────────────────────────────────────────────
 
@@ -68,6 +73,18 @@ class GeminiLLMService(BaseLLMService):
             config={"temperature": temp},
         )
         return completion.text.strip()
+
+    def stream_content(self, prompt: str, temperature: float = None) -> Iterator[str]:
+        """Yield text chunks as Gemini streams them."""
+        temp = temperature if temperature is not None else config.GEMINI_TEMPERATURE
+        print(f"[llm] Streaming from Gemini ({self.model})...")
+        for chunk in self.client.models.generate_content_stream(
+            model=self.model,
+            contents=prompt,
+            config={"temperature": temp},
+        ):
+            if chunk.text:
+                yield chunk.text
 
 
 # ── Local LLM (litert-lm, stateful KV cache) ──────────────────────────────────

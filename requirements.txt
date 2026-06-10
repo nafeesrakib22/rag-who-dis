@@ -1,3 +1,8 @@
+# For reproducible installs, use the pinned lock file:
+#   pip install -r requirements.lock
+#
+# This file lists direct dependencies with minimum versions for development.
+
 # --- Web Framework ---
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
@@ -27,4 +32,8 @@ opencv-python-headless>=4.9.0
 google-genai>=1.0.0
 
 # --- Local LLM (used when LLM_PROVIDER=local) ---
-litert-lm
+# litert-lm  # Uncomment if using LLM_PROVIDER=local (see README)
+
+# --- Testing ---
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

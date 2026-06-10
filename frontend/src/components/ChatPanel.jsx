@@ -69,7 +69,7 @@ export default function ChatPanel({ messages, loading, onSend, onViewTrace }) {
                         {messages.map(msg => (
                             <Message key={msg.id} message={msg} onViewTrace={onViewTrace} />
                         ))}
-                        {loading && (
+                        {loading && !messages.some(m => m.streaming && m.content) && (
                             <div className="message assistant">
                                 <div className="message-meta">RAG Assistant</div>
                                 <div className="typing-bubble">

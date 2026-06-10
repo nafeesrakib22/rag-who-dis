@@ -54,36 +54,90 @@ export default function App() {
   // ── Chat handlers ───────────────────────────────────────────
   const handleSend = async (question) => {
     const userMsg = { id: Date.now(), role: 'user', content: question }
-    setMessages(prev => [...prev, userMsg])
+    const assistantId = crypto.randomUUID()
+    // Add user message + empty assistant placeholder for streaming
+    setMessages(prev => [...prev, userMsg, {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      sources: [],
+      stages: null,
+      streaming: true,
+    }])
     setChatLoading(true)
+
     try {
-      const res = await fetch('/api/chat', {
+      const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          question, 
+        body: JSON.stringify({
+          question,
           history: messages.map(m => ({ role: m.role, content: m.content })),
           session_id: sessionId,
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Server error')
-
-      const assistantMsg = {
-        id: data.message_id,
-        role: 'assistant',
-        content: data.answer,
-        sources: data.sources,
-        stages: data.stages,
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Server error')
       }
-      setMessages(prev => [...prev, assistantMsg])
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        // Parse complete SSE messages from the buffer
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() // keep incomplete tail
+
+        for (const part of parts) {
+          const eventMatch = part.match(/^event: (.+)$/m)
+          const dataMatch = part.match(/^data: (.*)$/m)
+          if (!eventMatch || !dataMatch) continue
+          const event = eventMatch[1]
+          const data = dataMatch[1].replace(/\\n/g, '\n')
+
+          if (event === 'token') {
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId
+                ? { ...m, content: m.content + data }
+                : m
+            ))
+          } else if (event === 'sources') {
+            const sources = JSON.parse(data)
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId ? { ...m, sources } : m
+            ))
+          } else if (event === 'stages') {
+            const stages = JSON.parse(data)
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId ? { ...m, stages } : m
+            ))
+          } else if (event === 'error') {
+            setMessages(prev => prev.map(m =>
+              m.id === assistantId
+                ? { ...m, content: `⚠️ ${data}`, error: true }
+                : m
+            ))
+          }
+          // 'done' — just stop processing
+        }
+      }
+
+      // Mark streaming complete
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId ? { ...m, streaming: false } : m
+      ))
     } catch (e) {
-      setMessages(prev => [...prev, {
-        id: Date.now(),
-        role: 'assistant',
-        content: `⚠️ ${e.message}`,
-        error: true,
-      }])
+      setMessages(prev => prev.map(m =>
+        m.id === assistantId
+          ? { ...m, content: `⚠️ ${e.message}`, error: true, streaming: false }
+          : m
+      ))
     } finally {
       setChatLoading(false)
     }
