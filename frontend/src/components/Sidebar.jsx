@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 
-export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear, useReranker, onRerankerChange, llmProvider, onNewChat }) {
+export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onIngest, onClear, useReranker, onRerankerChange, llmProvider, onNewChat, authRequired, adminToken, onAdminTokenChange }) {
 
     const fileRef = useRef(null)
     const [busy, setBusy] = useState(false)
@@ -107,6 +107,32 @@ export default function Sidebar({ chunkCount, hybridAlpha, onAlphaChange, onInge
                 </div>
             </div>
 
+
+            {/* Admin Token (only shown when server requires auth) */}
+            {authRequired && (
+                <div className="sidebar-section">
+                    <label>Admin Token</label>
+                    <input
+                        type="password"
+                        className="admin-token-input"
+                        placeholder="Enter admin token…"
+                        value={adminToken}
+                        onChange={(e) => onAdminTokenChange(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            fontSize: '12px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border)',
+                            background: 'var(--bg)',
+                            color: 'var(--text)',
+                        }}
+                    />
+                    <div style={{ fontSize: '10px', opacity: 0.5, marginTop: '4px' }}>
+                        Set ADMIN_TOKEN in .env to protect settings.
+                    </div>
+                </div>
+            )}
 
             {/* Actions */}
             <div className="sidebar-section" style={{ marginTop: 'auto' }}>

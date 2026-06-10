@@ -18,6 +18,8 @@ export default function App() {
   const [useReranker, setUseReranker] = useState(true)
   const [llmProvider, setLlmProvider] = useState('gemini')
   const [toast, setToast] = useState(null)
+  const [authRequired, setAuthRequired] = useState(false)
+  const [adminToken, setAdminToken] = useState(() => localStorage.getItem('admin_token') || '')
 
   // ── Session ID — resets on page refresh or New Chat ────────
   const [sessionId, setSessionId] = useState(() => generateSessionId())
@@ -47,6 +49,7 @@ export default function App() {
       setHybridAlpha(data.hybrid_alpha)
       if (data.use_reranker !== undefined) setUseReranker(data.use_reranker)
       if (data.llm_provider) setLlmProvider(data.llm_provider)
+      if (data.auth_required !== undefined) setAuthRequired(data.auth_required)
     } catch { /* ignore */ }
   }
 
@@ -195,15 +198,31 @@ export default function App() {
     }
   }
 
+  const saveAdminToken = (token) => {
+    setAdminToken(token)
+    localStorage.setItem('admin_token', token)
+  }
+
+  const sendSettings = async (payload) => {
+    const body = { ...payload }
+    if (authRequired && adminToken) body.admin_token = adminToken
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (res.status === 401) {
+      showToast('❌ Invalid admin token. Check Settings.', 'error')
+      return false
+    }
+    if (!res.ok) throw new Error('Failed to update setting')
+    return true
+  }
+
   const updateHybridAlpha = async (val) => {
     setHybridAlpha(val)
     try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hybrid_alpha: val })
-      })
-      if (!res.ok) throw new Error('Failed to update alpha')
+      await sendSettings({ hybrid_alpha: val })
     } catch (e) {
       showToast(`❌ Error: ${e.message}`, 'error')
     }
@@ -212,12 +231,7 @@ export default function App() {
   const updateReranker = async (val) => {
     setUseReranker(val)
     try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_reranker: val })
-      })
-      if (!res.ok) throw new Error('Failed to update reranker setting')
+      await sendSettings({ use_reranker: val })
     } catch (e) {
       showToast(`❌ Error: ${e.message}`, 'error')
     }
@@ -243,6 +257,9 @@ export default function App() {
         hybridAlpha={hybridAlpha}
         useReranker={useReranker}
         llmProvider={llmProvider}
+        authRequired={authRequired}
+        adminToken={adminToken}
+        onAdminTokenChange={saveAdminToken}
         onAlphaChange={updateHybridAlpha}
         onRerankerChange={updateReranker}
         onIngest={handleIngest}

@@ -93,10 +93,12 @@ class StatusResponse(BaseModel):
     hybrid_alpha: float
     use_reranker: bool
     llm_provider: str  # 'gemini' or 'local'
+    auth_required: bool  # whether ADMIN_TOKEN is configured
 
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
     use_reranker: bool | None = None
+    admin_token: str | None = None  # sent by the frontend for authentication
 
 
 
@@ -223,21 +225,40 @@ async def status():
         hybrid_alpha=config.HYBRID_ALPHA,
         use_reranker=config.USE_RERANKER,
         llm_provider=config.LLM_PROVIDER,
+        auth_required=bool(config.ADMIN_TOKEN),
     )
 
 @app.post("/api/settings")
 async def update_settings(req: SettingsRequest):
-    """Update system settings and persist them to .env file."""
+    """
+    Update system settings and persist them to .env file.
+
+    When ADMIN_TOKEN is set in .env, the request must include a matching
+    admin_token field. When ADMIN_TOKEN is blank/unset, access is open
+    (convenient for local dev).
+    """
+    # ── Authentication ──────────────────────────────────────────
+    if config.ADMIN_TOKEN and req.admin_token != config.ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+
+    # ── Input validation ───────────────────────────────────────
+    if req.hybrid_alpha is not None:
+        if not (0.0 <= req.hybrid_alpha <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail="hybrid_alpha must be between 0.0 and 1.0.",
+            )
+
     try:
         from backend.core import config as cfg
-        
-        # Update memory config
+
+        # Update in-memory config
         if req.hybrid_alpha is not None:
             cfg.HYBRID_ALPHA = req.hybrid_alpha
         if req.use_reranker is not None:
             cfg.USE_RERANKER = req.use_reranker
-            
-        # Update .env file
+
+        # Persist to .env file
         env_path = Path(".env")
         lines = []
         updates = {}
@@ -258,19 +279,19 @@ async def update_settings(req: SettingsRequest):
                         lines.append(f"{key.strip()}={updates.pop(key.strip())}\n")
                     else:
                         lines.append(line)
-        
+
         for k, v in updates.items():
             if lines and not lines[-1].endswith("\n"):
                 lines[-1] += "\n"
             lines.append(f"{k}={v}\n")
-            
+
         with open(env_path, "w") as f:
             f.writelines(lines)
-            
+
         return {
             "message": "Settings updated.",
             "hybrid_alpha": cfg.HYBRID_ALPHA,
-            "use_reranker": cfg.USE_RERANKER
+            "use_reranker": cfg.USE_RERANKER,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

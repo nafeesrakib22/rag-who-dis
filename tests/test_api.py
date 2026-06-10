@@ -146,6 +146,76 @@ class TestChatStream:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/settings — auth + validation
+# ---------------------------------------------------------------------------
+
+class TestSettings:
+
+    def test_open_access_when_no_token_configured(self, client):
+        """When ADMIN_TOKEN is empty, settings should be accessible without a token."""
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = ""  # no token required
+        try:
+            res = c.post("/api/settings", json={"hybrid_alpha": 0.5})
+            assert res.status_code == 200
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_rejects_without_token_when_required(self, client):
+        """When ADMIN_TOKEN is set, requests without a matching token get 401."""
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = "secret123"
+        try:
+            res = c.post("/api/settings", json={"hybrid_alpha": 0.5})
+            assert res.status_code == 401
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_accepts_correct_token(self, client):
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = "secret123"
+        try:
+            res = c.post("/api/settings", json={
+                "hybrid_alpha": 0.5,
+                "admin_token": "secret123",
+            })
+            assert res.status_code == 200
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_rejects_invalid_alpha(self, client):
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = ""
+        try:
+            res = c.post("/api/settings", json={"hybrid_alpha": 1.5})
+            assert res.status_code == 422
+            res = c.post("/api/settings", json={"hybrid_alpha": -0.1})
+            assert res.status_code == 422
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_valid_alpha_range_accepted(self, client):
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = ""
+        try:
+            for val in [0.0, 0.5, 1.0]:
+                res = c.post("/api/settings", json={"hybrid_alpha": val})
+                assert res.status_code == 200
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+
+# ---------------------------------------------------------------------------
 # POST /api/clear
 # ---------------------------------------------------------------------------
 
