@@ -6,9 +6,12 @@ and ask questions answered with citations — grounded entirely in your own docu
 ## Highlights
 
 - Full-stack RAG app with FastAPI, React, Weaviate, hybrid search, re-ranking, and citation-grounded answers.
+- **Streaming responses** via Server-Sent Events — tokens appear in real time as the LLM generates.
 - Supports PDF, Markdown, and TXT ingestion with OCR fallback for scanned or corrupted PDFs.
 - Includes a Retrieval Trace view to inspect hybrid-search candidates, re-ranked chunks, and source evidence.
 - Supports both Gemini API and local Gemma inference via LiteRT-LM.
+- Token-gated settings endpoint with input validation (optional `ADMIN_TOKEN`).
+- 45-test suite covering chunking, loading, API endpoints, auth, and config.
 
 ## Stack
 
@@ -23,6 +26,18 @@ and ask questions answered with citations — grounded entirely in your own docu
 | LLM (local) | `gemma-4-E2B-it` via `litert-lm` (KV cache multi-turn) |
 | Backend API | FastAPI |
 | Frontend | React + Vite |
+
+---
+## API Endpoints
+
+- `POST /api/chat` — ask a question and get a grounded answer with citations.
+- `POST /api/chat/stream` — stream answer tokens via SSE with sources/stages events.
+- `POST /api/ingest` — upload and ingest a document (`.pdf`, `.md`, `.txt`).
+- `GET /api/status` — current chunk count and runtime settings.
+- `POST /api/settings` — update retrieval settings (`ADMIN_TOKEN` protected when configured).
+- `POST /api/clear` — clear the knowledge base.
+- `POST /api/retrieve` — return retrieval stages (hybrid + reranked) without LLM generation.
+- `POST /api/reset-session` — reset local KV-cache chat session (no-op in Gemini mode).
 
 ---
 
@@ -48,6 +63,7 @@ Open `.env` and fill in:
 - **`GOOGLE_API_KEY`** — from [Google AI Studio](https://aistudio.google.com/app/apikey) (required for Gemini mode and Gemini Vision OCR)
 - **`HF_TOKEN`** — from [HuggingFace settings](https://huggingface.co/settings/tokens) (required for the embedding model download)
 - **`LLM_PROVIDER`** — `gemini` (default) or `local` (see Local LLM section below)
+- **`ADMIN_TOKEN`** — (optional) protects the settings endpoint; see [Security](#security) below
 
 ### 2. Start Weaviate (vector database)
 
@@ -61,6 +77,12 @@ docker compose up weaviate -d
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+For reproducible installs with exact pinned versions:
+
+```bash
+pip install -r requirements.lock
 ```
 
 > **First run:** `sentence-transformers` will download `google/embeddinggemma-300m`
@@ -226,6 +248,57 @@ User Question
 Controlled by `OCR_STRATEGY` in `.env`:
 - **`local`** — Uses EasyOCR on your machine (free, supports Bangla + English, slower)
 - **`llm`** — Uses Gemini Vision (higher quality, consumes `GOOGLE_API_KEY` quota)
+
+---
+
+## Security
+
+The `/api/settings` endpoint lets the UI adjust retrieval parameters (hybrid alpha,
+reranker toggle) and persists them to `.env`. To prevent unauthorised changes:
+
+### Admin token authentication
+
+Set `ADMIN_TOKEN` in your `.env` to any random string:
+
+```ini
+ADMIN_TOKEN=my-secret-token-here
+```
+
+When set:
+- The settings endpoint requires the token in the request body — requests without
+  a valid token receive a `401 Unauthorized` response.
+- The frontend shows a password field in the sidebar where you enter the token once;
+  it's saved to `localStorage` and sent automatically on subsequent requests.
+
+When `ADMIN_TOKEN` is blank or absent (the default), the endpoint is open —
+convenient for local development with no friction.
+
+### Input validation
+
+Regardless of authentication, the endpoint enforces:
+- `hybrid_alpha` must be between `0.0` and `1.0` (422 otherwise)
+- `use_reranker` must be a boolean
+
+---
+
+## Testing
+
+The project includes a 45-test suite that runs without requiring a GPU, API keys,
+or a live Weaviate instance (API tests use a mocked pipeline).
+For end-to-end manual checks against a real vector DB, start Weaviate separately.
+
+```bash
+
+# Run the full suite
+pytest -v
+```
+
+Test coverage:
+- **Chunker** — fixed-size splitting, semantic splitting, metadata passthrough, chunk size limits
+- **Loader** — Bangla corruption detection, text/markdown loading, file dispatch, error handling
+- **API** — chat, streaming SSE, ingest, status, clear, settings auth + validation
+- **Config** — attribute presence, value ranges, LLM provider validation
+- **Weaviate store** — deterministic UUID generation
 
 ---
 

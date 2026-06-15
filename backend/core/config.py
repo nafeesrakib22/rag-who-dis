@@ -63,6 +63,11 @@ WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", 50051))
 WEAVIATE_COLLECTION_NAME = "RagChunks"
 HYBRID_ALPHA = float(os.environ.get("HYBRID_ALPHA", 0.7))
 
+# --- Admin authentication ---
+# Optional: protects the /api/settings endpoint.
+# Leave blank to allow unauthenticated access (convenient for local dev).
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+
 # --- Models configuration ---
 EMBED_MODEL_NAME = "google/embeddinggemma-300m"
 HF_TOKEN = os.environ.get("HF_TOKEN", "")

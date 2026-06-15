@@ -28,7 +28,7 @@ rag-venv/
 ENV/
 *_env/
 *venv
-
+rag-venv-2/
 # Environment Variables (SENSITIVE)
 .env
 .env.local
@@ -50,7 +50,6 @@ chunks.txt
 data/
 
 # Docker / ML artefacts (large, runtime-generated)
-ollama/models/
 .cache/
 
 # Frontend

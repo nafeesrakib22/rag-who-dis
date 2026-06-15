@@ -10,6 +10,7 @@ Endpoints:
   POST /api/clear   — wipe the collection
 """
 
+import json
 import os
 import uuid
 import shutil
@@ -17,8 +18,9 @@ import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.core import config
@@ -91,10 +93,12 @@ class StatusResponse(BaseModel):
     hybrid_alpha: float
     use_reranker: bool
     llm_provider: str  # 'gemini' or 'local'
+    auth_required: bool  # whether ADMIN_TOKEN is configured
 
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
     use_reranker: bool | None = None
+    admin_token: str | None = None  # sent by the frontend for authentication
 
 
 
@@ -126,6 +130,65 @@ async def chat(req: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+
+    Event types:
+      sources  — JSON array of source citations (sent once before tokens)
+      token    — a chunk of the generated answer text
+      done     — signals the stream is complete
+      error    — an error occurred
+    """
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    def event_stream():
+        try:
+            history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+            # Retrieve context (everything except LLM generation)
+            context = pipeline.prepare_context(
+                req.question,
+                history=history_dicts,
+                session_id=req.session_id,
+            )
+
+            if context is None:
+                yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
+                yield _sse("sources", "[]")
+                yield _sse("done", "")
+                return
+
+            # Send sources before streaming tokens
+            yield _sse("sources", json.dumps(context["sources"], ensure_ascii=False))
+            yield _sse("stages", json.dumps(context["stages"], ensure_ascii=False))
+
+            # Stream LLM tokens
+            for token in pipeline.stream_answer(context):
+                yield _sse("token", token)
+
+            yield _sse("done", "")
+        except Exception as e:
+            yield _sse("error", str(e))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+        },
+    )
+
+
+def _sse(event: str, data: str) -> str:
+    """Format a single SSE message."""
+    # SSE data lines must not contain bare newlines; encode them
+    escaped = data.replace("\n", "\\n")
+    return f"event: {event}\ndata: {escaped}\n\n"
 
 
 @app.post("/api/ingest")
@@ -162,21 +225,40 @@ async def status():
         hybrid_alpha=config.HYBRID_ALPHA,
         use_reranker=config.USE_RERANKER,
         llm_provider=config.LLM_PROVIDER,
+        auth_required=bool(config.ADMIN_TOKEN),
     )
 
 @app.post("/api/settings")
 async def update_settings(req: SettingsRequest):
-    """Update system settings and persist them to .env file."""
+    """
+    Update system settings and persist them to .env file.
+
+    When ADMIN_TOKEN is set in .env, the request must include a matching
+    admin_token field. When ADMIN_TOKEN is blank/unset, access is open
+    (convenient for local dev).
+    """
+    # ── Authentication ──────────────────────────────────────────
+    if config.ADMIN_TOKEN and req.admin_token != config.ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+
+    # ── Input validation ───────────────────────────────────────
+    if req.hybrid_alpha is not None:
+        if not (0.0 <= req.hybrid_alpha <= 1.0):
+            raise HTTPException(
+                status_code=422,
+                detail="hybrid_alpha must be between 0.0 and 1.0.",
+            )
+
     try:
         from backend.core import config as cfg
-        
-        # Update memory config
+
+        # Update in-memory config
         if req.hybrid_alpha is not None:
             cfg.HYBRID_ALPHA = req.hybrid_alpha
         if req.use_reranker is not None:
             cfg.USE_RERANKER = req.use_reranker
-            
-        # Update .env file
+
+        # Persist to .env file
         env_path = Path(".env")
         lines = []
         updates = {}
@@ -197,19 +279,19 @@ async def update_settings(req: SettingsRequest):
                         lines.append(f"{key.strip()}={updates.pop(key.strip())}\n")
                     else:
                         lines.append(line)
-        
+
         for k, v in updates.items():
             if lines and not lines[-1].endswith("\n"):
                 lines[-1] += "\n"
             lines.append(f"{k}={v}\n")
-            
+
         with open(env_path, "w") as f:
             f.writelines(lines)
-            
+
         return {
             "message": "Settings updated.",
             "hybrid_alpha": cfg.HYBRID_ALPHA,
-            "use_reranker": cfg.USE_RERANKER
+            "use_reranker": cfg.USE_RERANKER,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
