@@ -20,7 +20,6 @@ ENV/
 weaviate_db/
 chroma_db/
 data/
-ollama/
 
 # ── Frontend build outputs (built inside the container) ───────────────────
 frontend/node_modules/

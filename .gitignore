@@ -50,7 +50,6 @@ chunks.txt
 data/
 
 # Docker / ML artefacts (large, runtime-generated)
-ollama/models/
 .cache/
 
 # Frontend
