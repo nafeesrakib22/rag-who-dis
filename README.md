@@ -28,6 +28,18 @@ and ask questions answered with citations — grounded entirely in your own docu
 | Frontend | React + Vite |
 
 ---
+## API Endpoints
+
+- `POST /api/chat` — ask a question and get a grounded answer with citations.
+- `POST /api/chat/stream` — stream answer tokens via SSE with sources/stages events.
+- `POST /api/ingest` — upload and ingest a document (`.pdf`, `.md`, `.txt`).
+- `GET /api/status` — current chunk count and runtime settings.
+- `POST /api/settings` — update retrieval settings (`ADMIN_TOKEN` protected when configured).
+- `POST /api/clear` — clear the knowledge base.
+- `POST /api/retrieve` — return retrieval stages (hybrid + reranked) without LLM generation.
+- `POST /api/reset-session` — reset local KV-cache chat session (no-op in Gemini mode).
+
+---
 
 ## Setup (New Machine)
 
@@ -271,13 +283,11 @@ Regardless of authentication, the endpoint enforces:
 
 ## Testing
 
-The project includes a 45-test suite that runs without requiring a GPU or API keys
-(API tests use a mocked pipeline; Weaviate must be running for the test client
-lifespan).
+The project includes a 45-test suite that runs without requiring a GPU, API keys,
+or a live Weaviate instance (API tests use a mocked pipeline).
+For end-to-end manual checks against a real vector DB, start Weaviate separately.
 
 ```bash
-# Start Weaviate first
-docker compose up weaviate -d
 
 # Run the full suite
 pytest -v
