@@ -13,13 +13,14 @@ Endpoints:
 import asyncio
 import json
 import os
+import secrets
 import uuid
 import shutil
 import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -100,8 +101,32 @@ class StatusResponse(BaseModel):
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
     use_reranker: bool | None = None
-    admin_token: str | None = None  # sent by the frontend for authentication
 
+
+
+# ---------------------------------------------------------------------------
+# Auth helper
+# ---------------------------------------------------------------------------
+
+def _require_auth(authorization: str | None) -> None:
+    """
+    Enforce admin token authentication when ADMIN_TOKEN is configured.
+
+    Expects the standard HTTP header:  Authorization: Bearer <token>
+
+    Uses secrets.compare_digest() instead of == to prevent timing attacks —
+    a constant-time comparison that gives an attacker no signal about how many
+    characters of their guess were correct.
+    """
+    if not config.ADMIN_TOKEN:
+        return  # auth disabled — open access for local dev
+
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+
+    if not secrets.compare_digest(token, config.ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
 
 
 # ---------------------------------------------------------------------------
@@ -275,17 +300,19 @@ async def status():
     )
 
 @app.post("/api/settings")
-async def update_settings(req: SettingsRequest):
+async def update_settings(
+    req: SettingsRequest,
+    authorization: str | None = Header(default=None),
+):
     """
     Update system settings and persist them to .env file.
 
-    When ADMIN_TOKEN is set in .env, the request must include a matching
-    admin_token field. When ADMIN_TOKEN is blank/unset, access is open
-    (convenient for local dev).
+    When ADMIN_TOKEN is set in .env, the request must carry:
+        Authorization: Bearer <token>
+    When ADMIN_TOKEN is blank/unset, access is open (convenient for local dev).
     """
     # ── Authentication ──────────────────────────────────────────
-    if config.ADMIN_TOKEN and req.admin_token != config.ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+    _require_auth(authorization)
 
     # ── Input validation ───────────────────────────────────────
     if req.hybrid_alpha is not None:
@@ -344,8 +371,9 @@ async def update_settings(req: SettingsRequest):
 
 
 @app.post("/api/clear")
-async def clear():
+async def clear(authorization: str | None = Header(default=None)):
     """Wipe all chunks from the vector store."""
+    _require_auth(authorization)
     await asyncio.to_thread(pipeline.store.clear)
     return {"message": "Knowledge base cleared.", "chunk_count": 0}
 

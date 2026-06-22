@@ -158,7 +158,7 @@ class TestSettings:
         c, _ = client
         import backend.core.config as cfg
         original = cfg.ADMIN_TOKEN
-        cfg.ADMIN_TOKEN = ""  # no token required
+        cfg.ADMIN_TOKEN = ""
         try:
             res = c.post("/api/settings", json={"hybrid_alpha": 0.5})
             assert res.status_code == 200
@@ -166,7 +166,7 @@ class TestSettings:
             cfg.ADMIN_TOKEN = original
 
     def test_rejects_without_token_when_required(self, client):
-        """When ADMIN_TOKEN is set, requests without a matching token get 401."""
+        """When ADMIN_TOKEN is set, requests without a Bearer header get 401."""
         c, _ = client
         import backend.core.config as cfg
         original = cfg.ADMIN_TOKEN
@@ -177,17 +177,35 @@ class TestSettings:
         finally:
             cfg.ADMIN_TOKEN = original
 
-    def test_accepts_correct_token(self, client):
+    def test_accepts_correct_bearer_token(self, client):
+        """Correct token in Authorization: Bearer header must be accepted."""
         c, _ = client
         import backend.core.config as cfg
         original = cfg.ADMIN_TOKEN
         cfg.ADMIN_TOKEN = "secret123"
         try:
-            res = c.post("/api/settings", json={
-                "hybrid_alpha": 0.5,
-                "admin_token": "secret123",
-            })
+            res = c.post(
+                "/api/settings",
+                json={"hybrid_alpha": 0.5},
+                headers={"Authorization": "Bearer secret123"},
+            )
             assert res.status_code == 200
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_rejects_wrong_bearer_token(self, client):
+        """Wrong token must return 401."""
+        c, _ = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = "secret123"
+        try:
+            res = c.post(
+                "/api/settings",
+                json={"hybrid_alpha": 0.5},
+                headers={"Authorization": "Bearer wrongtoken"},
+            )
+            assert res.status_code == 401
         finally:
             cfg.ADMIN_TOKEN = original
 
@@ -256,3 +274,27 @@ class TestClear:
         data = res.json()
         assert data["chunk_count"] == 0
         mock.store.clear.assert_called_once()
+
+    def test_clear_blocked_without_token(self, client):
+        """When ADMIN_TOKEN is set, /api/clear must reject unauthenticated requests."""
+        c, mock = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = "secret123"
+        try:
+            res = c.post("/api/clear")
+            assert res.status_code == 401
+            mock.store.clear.assert_not_called()
+        finally:
+            cfg.ADMIN_TOKEN = original
+
+    def test_clear_allowed_with_correct_token(self, client):
+        c, mock = client
+        import backend.core.config as cfg
+        original = cfg.ADMIN_TOKEN
+        cfg.ADMIN_TOKEN = "secret123"
+        try:
+            res = c.post("/api/clear", headers={"Authorization": "Bearer secret123"})
+            assert res.status_code == 200
+        finally:
+            cfg.ADMIN_TOKEN = original
