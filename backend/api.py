@@ -10,6 +10,7 @@ Endpoints:
   POST /api/clear   — wipe the collection
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -113,7 +114,8 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
     try:
         history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
-        result = pipeline.ask(
+        result = await asyncio.to_thread(
+            pipeline.ask,
             req.question,
             history=history_dicts,
             session_id=req.session_id,
@@ -146,33 +148,63 @@ async def chat_stream(req: ChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    def event_stream():
+    async def event_stream():
+        """
+        Async SSE generator.
+
+        The pipeline (prepare_context + stream_answer) is entirely synchronous
+        and CPU/IO-bound.  We run it in a background thread and bridge tokens
+        back to this async generator via an asyncio.Queue, so the event loop is
+        never blocked and tokens are forwarded to the client as they arrive.
+        """
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+
+        def _run_pipeline():
+            try:
+                context = pipeline.prepare_context(
+                    req.question,
+                    history=history_dicts,
+                    session_id=req.session_id,
+                )
+                if context is None:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("empty", None))
+                    return
+
+                loop.call_soon_threadsafe(queue.put_nowait, ("sources", context))
+
+                for token in pipeline.stream_answer(context):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+
+        # Kick off the blocking pipeline work in the default thread-pool executor
+        future = loop.run_in_executor(None, _run_pipeline)
+
         try:
-            history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
-            # Retrieve context (everything except LLM generation)
-            context = pipeline.prepare_context(
-                req.question,
-                history=history_dicts,
-                session_id=req.session_id,
-            )
-
-            if context is None:
-                yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
-                yield _sse("sources", "[]")
-                yield _sse("done", "")
-                return
-
-            # Send sources before streaming tokens
-            yield _sse("sources", json.dumps(context["sources"], ensure_ascii=False))
-            yield _sse("stages", json.dumps(context["stages"], ensure_ascii=False))
-
-            # Stream LLM tokens
-            for token in pipeline.stream_answer(context):
-                yield _sse("token", token)
-
-            yield _sse("done", "")
-        except Exception as e:
-            yield _sse("error", str(e))
+            while True:
+                kind, payload = await queue.get()
+                if kind == "empty":
+                    yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
+                    yield _sse("sources", "[]")
+                    yield _sse("done", "")
+                    break
+                elif kind == "sources":
+                    yield _sse("sources", json.dumps(payload["sources"], ensure_ascii=False))
+                    yield _sse("stages", json.dumps(payload["stages"], ensure_ascii=False))
+                elif kind == "token":
+                    yield _sse("token", payload)
+                elif kind == "done":
+                    yield _sse("done", "")
+                    break
+                elif kind == "error":
+                    yield _sse("error", payload)
+                    break
+        finally:
+            await future  # ensure the thread has finished before the response closes
 
     return StreamingResponse(
         event_stream(),
@@ -206,10 +238,11 @@ async def ingest(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        pipeline.ingest(tmp_path)
+        await asyncio.to_thread(pipeline.ingest, tmp_path)
+        chunk_count = await asyncio.to_thread(pipeline.store.count)
         return {
             "message": f"'{file.filename}' ingested successfully.",
-            "chunk_count": pipeline.store.count(),
+            "chunk_count": chunk_count,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -220,8 +253,9 @@ async def ingest(file: UploadFile = File(...)):
 @app.get("/api/status", response_model=StatusResponse)
 async def status():
     """Return how many chunks are in the vector store."""
+    chunk_count = await asyncio.to_thread(pipeline.store.count)
     return StatusResponse(
-        chunk_count=pipeline.store.count(),
+        chunk_count=chunk_count,
         hybrid_alpha=config.HYBRID_ALPHA,
         use_reranker=config.USE_RERANKER,
         llm_provider=config.LLM_PROVIDER,
@@ -300,7 +334,7 @@ async def update_settings(req: SettingsRequest):
 @app.post("/api/clear")
 async def clear():
     """Wipe all chunks from the vector store."""
-    pipeline.store.clear()
+    await asyncio.to_thread(pipeline.store.clear)
     return {"message": "Knowledge base cleared.", "chunk_count": 0}
 
 
@@ -311,7 +345,7 @@ async def reset_session():
     Call this when the user starts a new chat or refreshes.
     No-op when LLM_PROVIDER=gemini.
     """
-    pipeline.reset_local_session()
+    await asyncio.to_thread(pipeline.reset_local_session)
     return {"message": "Session reset.", "llm_provider": config.LLM_PROVIDER}
 
 
@@ -326,16 +360,23 @@ async def retrieve(req: RetrieveRequest):
     try:
         from backend.core import config as cfg
         # Embed
-        query_vector = pipeline.embedder.embed([req.question], mode="query")[0]
+        vectors = await asyncio.to_thread(pipeline.embedder.embed, [req.question], mode="query")
+        query_vector = vectors[0]
         # Stage 1 — hybrid search
-        candidates = pipeline.store.query(
+        candidates = await asyncio.to_thread(
+            pipeline.store.query,
             query_vector,
-            n_results=cfg.RERANK_CANDIDATES,
-            query_text=req.question,
+            cfg.RERANK_CANDIDATES,
+            req.question,
         )
         # Stage 2 — rerank
         if cfg.USE_RERANKER:
-            reranked = pipeline.reranker.rerank(req.question, candidates, top_n=cfg.TOP_K_RESULTS)
+            reranked = await asyncio.to_thread(
+                pipeline.reranker.rerank,
+                req.question,
+                candidates,
+                cfg.TOP_K_RESULTS,
+            )
         else:
             reranked = []
 
