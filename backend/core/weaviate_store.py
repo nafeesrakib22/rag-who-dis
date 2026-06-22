@@ -165,6 +165,23 @@ class WeaviateStore:
         agg = self.collection.aggregate.over_all(total_count=True)
         return agg.total_count or 0
 
+    def source_exists(self, source_name: str) -> bool:
+        """Return True if at least one chunk for this source filename exists."""
+        response = self.collection.query.fetch_objects(
+            filters=wvc.query.Filter.by_property("source").equal(source_name),
+            limit=1,
+            return_properties=["source"],
+        )
+        return len(response.objects) > 0
+
+    def get_sources(self) -> list[str]:
+        """Return a sorted list of distinct source filenames in the store."""
+        response = self.collection.query.fetch_objects(
+            return_properties=["source"],
+            limit=10_000,
+        )
+        return sorted({obj.properties["source"] for obj in response.objects})
+
     def clear(self) -> None:
         """Delete the entire collection (irreversible)."""
         self.client.collections.delete(config.WEAVIATE_COLLECTION_NAME)

@@ -95,6 +95,7 @@ class StatusResponse(BaseModel):
     use_reranker: bool
     llm_provider: str  # 'gemini' or 'local'
     auth_required: bool  # whether ADMIN_TOKEN is configured
+    sources: list[str]  # distinct source filenames currently ingested
 
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
@@ -233,6 +234,13 @@ async def ingest(file: UploadFile = File(...)):
             detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(allowed)}"
         )
 
+    already_exists = await asyncio.to_thread(pipeline.store.source_exists, file.filename)
+    if already_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{file.filename}' is already in the knowledge base. Clear the knowledge base before re-ingesting.",
+        )
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
@@ -253,13 +261,17 @@ async def ingest(file: UploadFile = File(...)):
 @app.get("/api/status", response_model=StatusResponse)
 async def status():
     """Return how many chunks are in the vector store."""
-    chunk_count = await asyncio.to_thread(pipeline.store.count)
+    chunk_count, sources = await asyncio.gather(
+        asyncio.to_thread(pipeline.store.count),
+        asyncio.to_thread(pipeline.store.get_sources),
+    )
     return StatusResponse(
         chunk_count=chunk_count,
         hybrid_alpha=config.HYBRID_ALPHA,
         use_reranker=config.USE_RERANKER,
         llm_provider=config.LLM_PROVIDER,
         auth_required=bool(config.ADMIN_TOKEN),
+        sources=sources,
     )
 
 @app.post("/api/settings")

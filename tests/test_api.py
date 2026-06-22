@@ -50,6 +50,7 @@ class TestStatus:
 
     def test_returns_chunk_count(self, client):
         c, mock = client
+        mock.store.get_sources.return_value = ["doc.pdf"]
         res = c.get("/api/status")
         assert res.status_code == 200
         data = res.json()
@@ -57,6 +58,7 @@ class TestStatus:
         assert "hybrid_alpha" in data
         assert "use_reranker" in data
         assert "llm_provider" in data
+        assert data["sources"] == ["doc.pdf"]
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +215,32 @@ class TestSettings:
                 assert res.status_code == 200
         finally:
             cfg.ADMIN_TOKEN = original
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingest — duplicate detection
+# ---------------------------------------------------------------------------
+
+class TestIngest:
+
+    def test_duplicate_returns_409(self, client):
+        """Re-ingesting a filename already in the store must return 409."""
+        c, mock = client
+        mock.store.source_exists.return_value = True
+        data = {"file": ("report.pdf", b"%PDF-dummy", "application/pdf")}
+        res = c.post("/api/ingest", files=data)
+        assert res.status_code == 409
+        assert "already in the knowledge base" in res.json()["detail"]
+
+    def test_new_file_ingests_successfully(self, client):
+        """A filename not yet in the store should ingest and return 200."""
+        c, mock = client
+        mock.store.source_exists.return_value = False
+        mock.store.count.return_value = 10
+        data = {"file": ("new.pdf", b"%PDF-dummy", "application/pdf")}
+        res = c.post("/api/ingest", files=data)
+        assert res.status_code == 200
+        assert res.json()["chunk_count"] == 10
 
 
 # ---------------------------------------------------------------------------
