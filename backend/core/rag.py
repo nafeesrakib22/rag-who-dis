@@ -43,15 +43,17 @@ class RAGPipeline:
         self.reranker = Reranker()
         self.llm = get_llm_service()
 
-    def ingest(self, file_path: str) -> None:
+    def ingest(self, file_path: str, source_name: str = None) -> None:
         """
         Load a document, chunk it, embed it, and store it in Weaviate.
+        source_name overrides the filename stored in the DB (use when the file
+        is a temp path but the original name should be preserved).
         """
         print(f"\n{'='*60}")
-        print(f"INGESTING: {file_path}")
+        print(f"INGESTING: {source_name or file_path}")
         print('='*60)
 
-        pages = load_document(file_path)
+        pages = load_document(file_path, source_name=source_name)
 
         chunks = chunk_documents(
             pages,

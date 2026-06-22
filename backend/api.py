@@ -238,7 +238,7 @@ async def ingest(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        await asyncio.to_thread(pipeline.ingest, tmp_path)
+        await asyncio.to_thread(pipeline.ingest, tmp_path, source_name=file.filename)
         chunk_count = await asyncio.to_thread(pipeline.store.count)
         return {
             "message": f"'{file.filename}' ingested successfully.",

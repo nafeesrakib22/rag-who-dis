@@ -131,19 +131,19 @@ def google_ocr_with_gemini(images) -> list[str]:
     return texts
 
 
-def load_pdf_ocr(file_path: str) -> list[dict]:
+def load_pdf_ocr(file_path: str, source_name: str = None) -> list[dict]:
 
     import numpy as np
     from pdf2image import convert_from_path
     import gc
 
     strategy = os.environ.get("OCR_STRATEGY", "local").lower()
-    print(f"[loader] OCR fallback starting for '{os.path.basename(file_path)}' (Strategy: {strategy})...")
-    
+    filename = source_name or os.path.basename(file_path)
+    print(f"[loader] OCR fallback starting for '{filename}' (Strategy: {strategy})...")
+
     # DPI selection: Vision models handle lower DPI better than local OCR.
     dpi = 200 if strategy == "local" else 150
     images = convert_from_path(file_path, dpi=dpi)
-    filename = os.path.basename(file_path)
     pages = []
 
     if strategy == "llm":
@@ -183,17 +183,17 @@ def load_pdf_ocr(file_path: str) -> list[dict]:
     return pages
 
 
-def load_pdf(file_path: str) -> list[dict]:
+def load_pdf(file_path: str, source_name: str = None) -> list[dict]:
     """
     Load a PDF file and extract text page by page.
-    
+
     Attempts standard extraction with PyMuPDF first. If the resulting text
     appears corrupted (broken font mapping), it falls back to OCR.
     """
     import fitz
 
     doc = fitz.open(file_path)
-    filename = Path(file_path).name
+    filename = source_name or Path(file_path).name
     pages = []
     
     use_ocr = False
@@ -222,13 +222,13 @@ def load_pdf(file_path: str) -> list[dict]:
     if use_ocr:
         # If even one page is corrupted, we re-extract the whole doc with OCR
         # to ensure consistency in quality across pages.
-        return load_pdf_ocr(file_path)
+        return load_pdf_ocr(file_path, source_name=source_name)
         
     print(f"[loader] Loaded PDF '{filename}': {len(temp_pages)} pages with PyMuPDF.")
     return temp_pages
 
 
-def load_text(file_path: str) -> list[dict]:
+def load_text(file_path: str, source_name: str = None) -> list[dict]:
     """
     Load a Markdown or plain text (.txt) file.
 
@@ -236,7 +236,7 @@ def load_text(file_path: str) -> list[dict]:
         A list with a single dict (the entire file is treated as "page 1"):
         [{"text": "...", "source": "filename.txt", "page": 1}]
     """
-    filename = Path(file_path).name
+    filename = source_name or Path(file_path).name
     with open(file_path, "r", encoding="utf-8") as f:
         text = f.read().strip()
 
@@ -244,7 +244,7 @@ def load_text(file_path: str) -> list[dict]:
     return [{"text": text, "source": filename, "page": 1}]
 
 
-def load_json(file_path: str) -> list[dict]:
+def load_json(file_path: str, source_name: str = None) -> list[dict]:
     """
     Load a JSON file containing structured records and convert each record
     into a natural-language text string suitable for embedding.
@@ -269,7 +269,7 @@ def load_json(file_path: str) -> list[dict]:
     retrieval quality for questions like "cheapest 1-day pack" or
     "how do I activate 598 taka bundle".
     """
-    filename = Path(file_path).name
+    filename = source_name or Path(file_path).name
 
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -368,10 +368,12 @@ def load_json(file_path: str) -> list[dict]:
     return pages
 
 
-def load_document(file_path: str) -> list[dict]:
+def load_document(file_path: str, source_name: str = None) -> list[dict]:
     """
     Dispatcher: choose loader based on file extension.
 
+    source_name overrides the filename stored in chunk metadata. Pass it when
+    file_path is a temporary path and the original filename should be preserved.
     """
     ext = Path(file_path).suffix.lower()
 
@@ -379,10 +381,10 @@ def load_document(file_path: str) -> list[dict]:
         raise FileNotFoundError(f"File not found: {file_path}")
 
     if ext == ".pdf":
-        return load_pdf(file_path)
+        return load_pdf(file_path, source_name=source_name)
     elif ext in (".md", ".txt"):
-        return load_text(file_path)
+        return load_text(file_path, source_name=source_name)
     elif ext == ".json":
-        return load_json(file_path)
+        return load_json(file_path, source_name=source_name)
     else:
         raise ValueError(f"Unsupported file type: '{ext}'. Use .pdf, .md, .txt, or .json")
