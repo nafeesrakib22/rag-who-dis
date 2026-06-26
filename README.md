@@ -7,10 +7,12 @@ and ask questions answered with citations — grounded entirely in your own docu
 
 - Full-stack RAG app with FastAPI, React, Weaviate, hybrid search, re-ranking, and citation-grounded answers.
 - **Streaming responses** via Server-Sent Events — tokens appear in real time as the LLM generates.
+- **Streaming ingest progress** via SSE — `POST /api/ingest` returns a `job_id` immediately; connect to `GET /api/ingest/{job_id}/progress` to receive live stage events (loading → chunking → embedding → storing).
 - Supports PDF, Markdown, and TXT ingestion with OCR fallback for scanned or corrupted PDFs.
+- Structured logging throughout with `LOG_LEVEL` env var control (DEBUG/INFO/WARNING/ERROR).
 - Includes a Retrieval Trace view to inspect hybrid-search candidates, re-ranked chunks, and source evidence.
 - Supports both Gemini API and local Gemma inference via LiteRT-LM.
-- Token-gated settings endpoint with input validation (optional `ADMIN_TOKEN`).
+- Token-gated admin endpoints (`/api/settings`, `/api/clear`) using `Authorization: Bearer` header with timing-safe comparison (optional `ADMIN_TOKEN`).
 - 45-test suite covering chunking, loading, API endpoints, auth, and config.
 
 ## Stack
@@ -30,14 +32,17 @@ and ask questions answered with citations — grounded entirely in your own docu
 ---
 ## API Endpoints
 
-- `POST /api/chat` — ask a question and get a grounded answer with citations.
-- `POST /api/chat/stream` — stream answer tokens via SSE with sources/stages events.
-- `POST /api/ingest` — upload and ingest a document (`.pdf`, `.md`, `.txt`).
-- `GET /api/status` — current chunk count and runtime settings.
-- `POST /api/settings` — update retrieval settings (`ADMIN_TOKEN` protected when configured).
-- `POST /api/clear` — clear the knowledge base.
-- `POST /api/retrieve` — return retrieval stages (hybrid + reranked) without LLM generation.
-- `POST /api/reset-session` — reset local KV-cache chat session (no-op in Gemini mode).
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/chat` | Ask a question — returns grounded answer with citations. |
+| `POST` | `/api/chat/stream` | Stream answer tokens via SSE (`sources`, `token`, `done` events). |
+| `POST` | `/api/ingest` | Upload a document — starts background ingestion, returns `job_id`. |
+| `GET` | `/api/ingest/{job_id}/progress` | Stream ingest progress via SSE (`progress`, `done`, `error` events). |
+| `GET` | `/api/status` | Current chunk count, ingested sources, and runtime settings. |
+| `POST` | `/api/settings` | Update retrieval settings — requires `Authorization: Bearer` when `ADMIN_TOKEN` is set. |
+| `POST` | `/api/clear` | Wipe the knowledge base — requires `Authorization: Bearer` when `ADMIN_TOKEN` is set. |
+| `POST` | `/api/retrieve` | Return hybrid + reranked retrieval stages without calling the LLM. |
+| `POST` | `/api/reset-session` | Reset local KV-cache chat session (no-op in Gemini mode). |
 
 ---
 
@@ -48,7 +53,7 @@ and ask questions answered with citations — grounded entirely in your own docu
 - **Python 3.10+**
 - **Docker** (for Weaviate)
 - **Node.js 18+** (for the frontend)
-- **HuggingFace account** with access to `google/embeddinggemma-300m` (free, gated)
+- **HuggingFace account** with access to `google/embeddinggemma-300m` (free, but gated — you must visit [the model page](https://huggingface.co/google/embeddinggemma-300m) and click **"Agree and access repository"** before your `HF_TOKEN` will allow the download)
 
 ### 1. Clone & configure environment
 
@@ -61,9 +66,10 @@ cp .env.example .env
 
 Open `.env` and fill in:
 - **`GOOGLE_API_KEY`** — from [Google AI Studio](https://aistudio.google.com/app/apikey) (required for Gemini mode and Gemini Vision OCR)
-- **`HF_TOKEN`** — from [HuggingFace settings](https://huggingface.co/settings/tokens) (required for the embedding model download)
+- **`HF_TOKEN`** — from [HuggingFace settings](https://huggingface.co/settings/tokens) (required for the embedding model download — see Prerequisites above)
 - **`LLM_PROVIDER`** — `gemini` (default) or `local` (see Local LLM section below)
-- **`ADMIN_TOKEN`** — (optional) protects the settings endpoint; see [Security](#security) below
+- **`ADMIN_TOKEN`** — (optional) protects the `/api/settings` and `/api/clear` endpoints; see [Security](#security) below
+- **`LOG_LEVEL`** — (optional) controls log verbosity: `DEBUG`, `INFO` (default), `WARNING`, or `ERROR`
 
 ### 2. Start Weaviate (vector database)
 
@@ -75,7 +81,12 @@ docker compose up weaviate -d
 
 ```bash
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+
+# Activate the virtual environment:
+source venv/bin/activate          # Linux / macOS / Git Bash on Windows
+.\venv\Scripts\Activate.ps1       # Windows PowerShell
+venv\Scripts\activate.bat         # Windows cmd
+
 pip install -r requirements.txt
 ```
 
@@ -90,6 +101,8 @@ pip install -r requirements.lock
 > They are cached in `~/.cache/huggingface/` and reused on subsequent runs.
 
 ### 4. Start the backend
+
+Make sure your virtual environment is activated (see step 3), then:
 
 ```bash
 uvicorn backend.api:app --reload --reload-exclude weaviate_db
@@ -118,11 +131,21 @@ model via `litert-lm`.
 
 ### 1. Install litert-lm
 
+`litert-lm` is included in `requirements.txt` but commented out. Uncomment it:
+
+```
+# litert-lm  ← remove the leading #
+```
+
+Then re-run (with your virtual environment activated):
+
 ```bash
-pip install litert-lm
+pip install -r requirements.txt
 ```
 
 ### 2. Download the model
+
+The model is gated — visit [litert-community/gemma-4-E2B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) on HuggingFace and accept the terms before running this command:
 
 ```bash
 litert-lm import --from-huggingface-repo=litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm gemma-e2b
@@ -214,11 +237,17 @@ python -m backend.main clear
 
 ### Ingestion Pipeline
 ```
-Document (PDF / MD / TXT)
-    → Load          Extract text (with OCR fallback for scanned PDFs)
-    → Chunk         Semantic chunking using sentence embeddings
-    → Embed         Dense vectors via embeddinggemma-300m (in-process)
-    → Store         Weaviate: vectors + BM25 index
+POST /api/ingest  →  duplicate check  →  save temp file  →  return job_id
+                                                                    ↓
+GET /api/ingest/{job_id}/progress  ←←←  SSE progress stream  ←←←←←←
+
+Background thread:
+    Document (PDF / MD / TXT)
+        → Load    [progress: loading]    Extract text (with OCR fallback)
+        → Chunk   [progress: chunking]   Semantic chunking via sentence embeddings
+        → Embed   [progress: embedding]  Dense vectors via embeddinggemma-300m
+        → Store   [progress: storing]    Weaviate: vectors + BM25 index
+        → Done    [event: done]
 ```
 
 ### Query Pipeline (Gemini mode)
@@ -253,29 +282,31 @@ Controlled by `OCR_STRATEGY` in `.env`:
 
 ## Security
 
-The `/api/settings` endpoint lets the UI adjust retrieval parameters (hybrid alpha,
-reranker toggle) and persists them to `.env`. To prevent unauthorised changes:
+The `/api/settings` and `/api/clear` endpoints are admin-only — they modify
+retrieval parameters and wipe the knowledge base respectively.
+To protect them, set `ADMIN_TOKEN` in `.env`.
 
 ### Admin token authentication
-
-Set `ADMIN_TOKEN` in your `.env` to any random string:
 
 ```ini
 ADMIN_TOKEN=my-secret-token-here
 ```
 
 When set:
-- The settings endpoint requires the token in the request body — requests without
-  a valid token receive a `401 Unauthorized` response.
-- The frontend shows a password field in the sidebar where you enter the token once;
-  it's saved to `localStorage` and sent automatically on subsequent requests.
+- Both `/api/settings` and `/api/clear` require the token in the standard HTTP auth header:
+  ```
+  Authorization: Bearer my-secret-token-here
+  ```
+- Requests without a valid token receive a `401 Unauthorized` response.
+- Token comparison uses `secrets.compare_digest()` (constant-time) to prevent timing attacks.
+- The frontend stores the token in `localStorage` and attaches the header automatically.
 
-When `ADMIN_TOKEN` is blank or absent (the default), the endpoint is open —
+When `ADMIN_TOKEN` is blank or absent (the default), both endpoints are open —
 convenient for local development with no friction.
 
 ### Input validation
 
-Regardless of authentication, the endpoint enforces:
+Regardless of authentication, `/api/settings` enforces:
 - `hybrid_alpha` must be between `0.0` and `1.0` (422 otherwise)
 - `use_reranker` must be a boolean
 
