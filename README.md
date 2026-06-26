@@ -145,7 +145,7 @@ pip install -r requirements.txt
 
 ### 2. Download the model
 
-The model is gated — visit [litert-community/gemma-4-E2B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) on HuggingFace and accept the terms before running this command:
+The model is gated — visit [litert-community/gemma-4-E2B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) and accept the terms before running this command:
 
 ```bash
 litert-lm import --from-huggingface-repo=litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm gemma-e2b
