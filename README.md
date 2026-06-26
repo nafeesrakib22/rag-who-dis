@@ -1,5 +1,7 @@
 # RAG System — Retrieval-Augmented Generation
 
+![CI](https://github.com/nafeesrakib22/rag-who-dis/actions/workflows/ci.yml/badge.svg)
+
 A full-stack RAG system that lets you ingest PDF, Markdown, and text documents
 and ask questions answered with citations — grounded entirely in your own documents.
 
