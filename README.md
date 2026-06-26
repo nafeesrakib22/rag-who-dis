@@ -181,36 +181,32 @@ LOCAL_MODEL_PATH=/home/yourname/.litert-lm/models/gemma-e2b/model.litertlm
 
 ### Docker with local mode
 
-The model directory is bind-mounted into the container automatically.
-Update `docker-compose.yml` if your model path differs from the default:
+The model directory is bind-mounted into the container via the `LOCAL_MODELS_DIR`
+environment variable. Add it to your `.env`:
 
-```yaml
-volumes:
-  - /home/<your-username>/.litert-lm/models:/models:ro
+```ini
+LOCAL_MODELS_DIR=/home/yourname/.litert-lm/models
 ```
 
-Example:
-
-```yaml
-volumes:
-  - /home/yourname/.litert-lm/models:/models:ro
-```
+`docker-compose.yml` reads this and mounts it as `/models` inside the container.
+If `LOCAL_MODELS_DIR` is not set, the compose file falls back to
+`/home/<your-username>/.litert-lm/models` — edit that default in `docker-compose.yml`
+if you prefer not to use the env var.
 
 ---
 
 ## Docker (Full Stack)
 
-```bash
-docker compose up --build -d
-```
-
-The build bakes the embedding + reranker models into the image layer (no download at runtime).
-Pass your HuggingFace token as a build argument:
+The build bakes the embedding + reranker models into the image layer so there's no
+download at runtime. `HF_TOKEN` must be passed as a build argument:
 
 ```bash
 docker compose build --build-arg HF_TOKEN=your_hf_token
 docker compose up -d
 ```
+
+> The models are baked into the image at build time. Subsequent `docker compose up -d`
+> runs (without `--build`) reuse the cached layer and start instantly.
 
 ---
 
