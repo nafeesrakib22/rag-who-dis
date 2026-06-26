@@ -46,16 +46,23 @@ class RAGPipeline:
         self.reranker = Reranker()
         self.llm = get_llm_service()
 
-    def ingest(self, file_path: str, source_name: str = None) -> None:
+    def ingest(self, file_path: str, source_name: str = None, progress_callback=None) -> None:
         """
         Load a document, chunk it, embed it, and store it in Weaviate.
         source_name overrides the filename stored in the DB (use when the file
         is a temp path but the original name should be preserved).
+        progress_callback(stage, payload) is called at each pipeline stage so
+        callers can stream progress to a client.
         """
-        logger.info("Ingesting: %s", source_name or file_path)
+        def _emit(stage, payload=None):
+            if progress_callback:
+                progress_callback(stage, payload)
 
+        logger.info("Ingesting: %s", source_name or file_path)
+        _emit("loading")
         pages = load_document(file_path, source_name=source_name)
 
+        _emit("chunking", {"pages": len(pages)})
         chunks = chunk_documents(
             pages,
             chunk_size=config.CHUNK_SIZE,
@@ -67,10 +74,12 @@ class RAGPipeline:
             logger.warning("No chunks produced. The document may be empty.")
             return
 
+        _emit("embedding", {"chunks": len(chunks)})
         texts = [c["text"] for c in chunks]
         logger.info("Embedding %d chunks...", len(texts))
         embeddings = self.embedder.embed(texts)
 
+        _emit("storing", {"chunks": len(chunks)})
         self.store.add_chunks(chunks, embeddings)
 
         logger.info("Ingestion complete. '%s' is now searchable.", source_name or file_path)

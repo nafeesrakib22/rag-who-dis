@@ -250,15 +250,50 @@ class TestIngest:
         assert res.status_code == 409
         assert "already in the knowledge base" in res.json()["detail"]
 
-    def test_new_file_ingests_successfully(self, client):
-        """A filename not yet in the store should ingest and return 200."""
+    def test_new_file_returns_job_id(self, client):
+        """A new file upload must return a job_id for progress tracking."""
         c, mock = client
         mock.store.source_exists.return_value = False
-        mock.store.count.return_value = 10
         data = {"file": ("new.pdf", b"%PDF-dummy", "application/pdf")}
         res = c.post("/api/ingest", files=data)
         assert res.status_code == 200
-        assert res.json()["chunk_count"] == 10
+        body = res.json()
+        assert "job_id" in body
+        assert body["filename"] == "new.pdf"
+
+    def test_progress_unknown_job_returns_404(self, client):
+        """GET /api/ingest/{job_id}/progress with unknown job_id must return 404."""
+        c, _ = client
+        res = c.get("/api/ingest/nonexistent-id/progress")
+        assert res.status_code == 404
+
+    def test_progress_streams_events(self, client):
+        """Progress SSE endpoint must stream stage events and a final done event."""
+        c, mock = client
+        mock.store.source_exists.return_value = False
+
+        def fake_ingest(tmp_path, source_name=None, progress_callback=None):
+            if progress_callback:
+                progress_callback("loading")
+                progress_callback("chunking", {"pages": 1})
+                progress_callback("embedding", {"chunks": 3})
+                progress_callback("storing", {"chunks": 3})
+
+        mock.ingest.side_effect = fake_ingest
+
+        data = {"file": ("doc.pdf", b"%PDF-dummy", "application/pdf")}
+        post_res = c.post("/api/ingest", files=data)
+        assert post_res.status_code == 200
+        job_id = post_res.json()["job_id"]
+
+        res = c.get(f"/api/ingest/{job_id}/progress")
+        assert res.status_code == 200
+        assert "text/event-stream" in res.headers["content-type"]
+        body = res.text
+        assert "event: progress" in body
+        assert '"stage": "loading"' in body
+        assert '"stage": "chunking"' in body
+        assert "event: done" in body
 
 
 # ---------------------------------------------------------------------------

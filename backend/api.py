@@ -254,8 +254,19 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {escaped}\n\n"
 
 
+# Job registry: maps job_id → asyncio.Queue for ingest progress streaming.
+# Entry is created by POST /api/ingest and removed when the progress SSE closes.
+_ingest_jobs: dict[str, asyncio.Queue] = {}
+
+
 @app.post("/api/ingest")
 async def ingest(file: UploadFile = File(...)):
+    """
+    Upload a file and start ingestion in the background.
+
+    Returns a job_id immediately — connect to GET /api/ingest/{job_id}/progress
+    to stream real-time progress events via SSE.
+    """
     allowed = {".pdf", ".md", ".txt"}
     suffix = Path(file.filename).suffix.lower()
     if suffix not in allowed:
@@ -275,17 +286,67 @@ async def ingest(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
-    try:
-        await asyncio.to_thread(pipeline.ingest, tmp_path, source_name=file.filename)
-        chunk_count = await asyncio.to_thread(pipeline.store.count)
-        return {
-            "message": f"'{file.filename}' ingested successfully.",
-            "chunk_count": chunk_count,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        os.unlink(tmp_path)
+    filename = file.filename
+    job_id = str(uuid.uuid4())
+    queue: asyncio.Queue = asyncio.Queue()
+    _ingest_jobs[job_id] = queue
+    loop = asyncio.get_running_loop()
+
+    def _run():
+        try:
+            def progress_callback(stage, payload=None):
+                event = {"stage": stage, **(payload or {})}
+                loop.call_soon_threadsafe(queue.put_nowait, ("progress", event))
+
+            pipeline.ingest(tmp_path, source_name=filename, progress_callback=progress_callback)
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    loop.run_in_executor(None, _run)
+    return {"job_id": job_id, "filename": filename}
+
+
+@app.get("/api/ingest/{job_id}/progress")
+async def ingest_progress(job_id: str):
+    """
+    Stream ingest progress as Server-Sent Events.
+
+    Event types:
+      progress  — JSON payload with {"stage": "loading"|"chunking"|"embedding"|"storing", ...}
+      done      — ingestion finished successfully
+      error     — ingestion failed; data contains the error message
+    """
+    if job_id not in _ingest_jobs:
+        raise HTTPException(status_code=404, detail="Job not found or already completed.")
+
+    queue = _ingest_jobs[job_id]
+
+    async def event_stream():
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "progress":
+                    yield _sse("progress", json.dumps(payload))
+                elif kind == "done":
+                    yield _sse("done", "")
+                    break
+                elif kind == "error":
+                    yield _sse("error", payload)
+                    break
+        finally:
+            _ingest_jobs.pop(job_id, None)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/status", response_model=StatusResponse)
