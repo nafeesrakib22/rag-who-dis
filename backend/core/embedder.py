@@ -8,7 +8,6 @@ The model is downloaded to the HuggingFace cache on first use
 
 import logging
 
-import numpy as np
 from sentence_transformers import SentenceTransformer
 from . import config
 

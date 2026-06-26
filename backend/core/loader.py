@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from . import config  # Ensures .env is loaded
+from . import config  # noqa: F401 — side-effect import: ensures .env is loaded
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +203,6 @@ def load_pdf(file_path: str, source_name: str = None) -> list[dict]:
 
     doc = fitz.open(file_path)
     filename = source_name or Path(file_path).name
-    pages = []
-    
     use_ocr = False
     temp_pages = []
 

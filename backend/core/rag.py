@@ -20,14 +20,14 @@ import logging
 from collections.abc import Iterator
 
 from . import config
-
-logger = logging.getLogger(__name__)
 from .loader import load_document
 from .chunker import chunk_documents, SemanticChunker
 from .embedder import Embedder
 from .weaviate_store import WeaviateStore
 from .reranker import Reranker
 from .llm import get_llm_service
+
+logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
