@@ -20,7 +20,10 @@ Usage:
 
 import argparse
 import sys
+from backend.core.logging_config import configure_logging
 from backend.core.rag import RAGPipeline
+
+configure_logging()
 
 
 def print_banner():

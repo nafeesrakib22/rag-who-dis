@@ -16,6 +16,7 @@ This module ties everything together:
     (History lives in the model's KV cache — no re-injection needed)
 """
 
+import logging
 from collections.abc import Iterator
 
 from . import config
@@ -25,6 +26,8 @@ from .embedder import Embedder
 from .weaviate_store import WeaviateStore
 from .reranker import Reranker
 from .llm import get_llm_service
+
+logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
@@ -43,16 +46,23 @@ class RAGPipeline:
         self.reranker = Reranker()
         self.llm = get_llm_service()
 
-    def ingest(self, file_path: str) -> None:
+    def ingest(self, file_path: str, source_name: str = None, progress_callback=None) -> None:
         """
         Load a document, chunk it, embed it, and store it in Weaviate.
+        source_name overrides the filename stored in the DB (use when the file
+        is a temp path but the original name should be preserved).
+        progress_callback(stage, payload) is called at each pipeline stage so
+        callers can stream progress to a client.
         """
-        print(f"\n{'='*60}")
-        print(f"INGESTING: {file_path}")
-        print('='*60)
+        def _emit(stage, payload=None):
+            if progress_callback:
+                progress_callback(stage, payload)
 
-        pages = load_document(file_path)
+        logger.info("Ingesting: %s", source_name or file_path)
+        _emit("loading")
+        pages = load_document(file_path, source_name=source_name)
 
+        _emit("chunking", {"pages": len(pages)})
         chunks = chunk_documents(
             pages,
             chunk_size=config.CHUNK_SIZE,
@@ -61,16 +71,18 @@ class RAGPipeline:
         )
 
         if not chunks:
-            print("[rag] No chunks produced. The document may be empty.")
+            logger.warning("No chunks produced. The document may be empty.")
             return
 
+        _emit("embedding", {"chunks": len(chunks)})
         texts = [c["text"] for c in chunks]
-        print(f"[rag] Embedding {len(texts)} chunks...")
+        logger.info("Embedding %d chunks...", len(texts))
         embeddings = self.embedder.embed(texts)
 
+        _emit("storing", {"chunks": len(chunks)})
         self.store.add_chunks(chunks, embeddings)
 
-        print(f"\n✅ Ingestion complete! '{file_path}' is now searchable.")
+        logger.info("Ingestion complete. '%s' is now searchable.", source_name or file_path)
 
     def ask(self, question: str, history: list[dict] = None, session_id: str = None) -> dict:
         """
@@ -80,9 +92,7 @@ class RAGPipeline:
         - Local mode:  history lives in the model's KV cache; only new context
                        and the question are sent each turn.
         """
-        print(f"\n{'='*60}")
-        print(f"QUERY: {question}  [provider={config.LLM_PROVIDER}]")
-        print('='*60)
+        logger.info("Query: %s  [provider=%s]", question, config.LLM_PROVIDER)
 
         history = history or []
 
@@ -94,13 +104,13 @@ class RAGPipeline:
 
         if config.LLM_PROVIDER == "gemini" and history:
             past_history = history[:-3]
-            print(f"[rag] Analyzing context from {len(history)} previous turns...")
+            logger.debug("Analysing context from %d previous turns...", len(history))
             if past_history:
                 summary = self._get_conversation_summary(past_history)
             initial_vector = self.embedder.embed([question], mode="query")[0]
             selected_past = self._get_relevant_past_messages(initial_vector, past_history)
             condensed_query = self._condense_query(summary, selected_past, recent_history, question)
-            print(f"[rag] Condensed query: '{condensed_query}'")
+            logger.debug("Condensed query: '%s'", condensed_query)
 
         # ── Local path: no query condensation (history is in KV cache) ────────
         # condensed_query remains the raw question
@@ -112,11 +122,11 @@ class RAGPipeline:
             }
 
         # ── Step 1: Embed the (possibly condensed) query ───────────────────────
-        print(f"[rag] Embedding query: '{condensed_query}'...")
+        logger.debug("Embedding query: '%s'...", condensed_query)
         query_vector = self.embedder.embed([condensed_query], mode="query")[0]
 
         # ── Stage 1: Hybrid search ─────────────────────────────────────────────
-        print(f"[rag] Stage 1: hybrid retrieval of top {config.RERANK_CANDIDATES} candidates...")
+        logger.debug("Stage 1: hybrid retrieval of top %d candidates...", config.RERANK_CANDIDATES)
         candidates = self.store.query(
             query_vector,
             n_results=config.RERANK_CANDIDATES,
@@ -130,12 +140,12 @@ class RAGPipeline:
         if config.USE_RERANKER:
             retrieved_chunks = self.reranker.rerank(question, candidates, top_n=config.TOP_K_RESULTS)
         else:
-            print("[rag] Stage 2: Re-ranking bypassed (USE_RERANKER=False)")
+            logger.debug("Stage 2: reranking bypassed (USE_RERANKER=False).")
             retrieved_chunks = candidates[:config.TOP_K_RESULTS]
             for c in retrieved_chunks:
                 c["rerank_score"] = None
 
-        print(f"[rag] Final {len(retrieved_chunks)} chunks after re-ranking.")
+        logger.debug("Final %d chunks after re-ranking.", len(retrieved_chunks))
 
         # ── Step 3: Generate answer ────────────────────────────────────────────
         try:
@@ -379,7 +389,7 @@ ANSWER:"""
         try:
             return self.llm.generate_content(prompt)
         except Exception as e:
-            print(f"[rag] Error summarizing: {e}")
+            logger.warning("Error summarising conversation history: %s", e)
             return ""
 
     def _get_relevant_past_messages(self, query_vector: list[float],
@@ -397,7 +407,7 @@ ANSWER:"""
                 if cosine(query_vector, m_vectors[i]) >= threshold:
                     selected.append(m)
         except Exception as e:
-            print(f"[rag] Error batch embedding past messages: {e}")
+            logger.warning("Error batch-embedding past messages: %s", e)
         return selected
 
     def _condense_query(self, summary: str, selected: list[dict],

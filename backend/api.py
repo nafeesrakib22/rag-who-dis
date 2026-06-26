@@ -10,26 +10,34 @@ Endpoints:
   POST /api/clear   — wipe the collection
 """
 
+import asyncio
 import json
+import logging
 import os
+import secrets
 import uuid
 import shutil
 import tempfile
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.core import config
+from backend.core.logging_config import configure_logging
 from backend.core.rag import RAGPipeline
+
+configure_logging()
 
 
 # ---------------------------------------------------------------------------
 # App lifecycle — load the heavy models once at startup
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 pipeline: RAGPipeline = None
 
@@ -37,14 +45,13 @@ pipeline: RAGPipeline = None
 async def lifespan(app: FastAPI):
     """Load the RAG pipeline (models + DB connection) once at server startup."""
     global pipeline
-    print("[api] Starting up — loading RAG pipeline...")
+    logger.info("Starting up — loading RAG pipeline...")
     pipeline = RAGPipeline()
-    print("[api] RAG pipeline ready.")
+    logger.info("RAG pipeline ready.")
     yield
-    # Shutdown
     if pipeline and hasattr(pipeline.store, "close"):
         pipeline.store.close()
-    print("[api] Shutdown complete.")
+    logger.info("Shutdown complete.")
 
 
 app = FastAPI(title="RAG API", lifespan=lifespan)
@@ -94,12 +101,37 @@ class StatusResponse(BaseModel):
     use_reranker: bool
     llm_provider: str  # 'gemini' or 'local'
     auth_required: bool  # whether ADMIN_TOKEN is configured
+    sources: list[str]  # distinct source filenames currently ingested
 
 class SettingsRequest(BaseModel):
     hybrid_alpha: float | None = None
     use_reranker: bool | None = None
-    admin_token: str | None = None  # sent by the frontend for authentication
 
+
+
+# ---------------------------------------------------------------------------
+# Auth helper
+# ---------------------------------------------------------------------------
+
+def _require_auth(authorization: str | None) -> None:
+    """
+    Enforce admin token authentication when ADMIN_TOKEN is configured.
+
+    Expects the standard HTTP header:  Authorization: Bearer <token>
+
+    Uses secrets.compare_digest() instead of == to prevent timing attacks —
+    a constant-time comparison that gives an attacker no signal about how many
+    characters of their guess were correct.
+    """
+    if not config.ADMIN_TOKEN:
+        return  # auth disabled — open access for local dev
+
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+
+    if not secrets.compare_digest(token, config.ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +145,8 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
     try:
         history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
-        result = pipeline.ask(
+        result = await asyncio.to_thread(
+            pipeline.ask,
             req.question,
             history=history_dicts,
             session_id=req.session_id,
@@ -146,33 +179,63 @@ async def chat_stream(req: ChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    def event_stream():
+    async def event_stream():
+        """
+        Async SSE generator.
+
+        The pipeline (prepare_context + stream_answer) is entirely synchronous
+        and CPU/IO-bound.  We run it in a background thread and bridge tokens
+        back to this async generator via an asyncio.Queue, so the event loop is
+        never blocked and tokens are forwarded to the client as they arrive.
+        """
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
+
+        def _run_pipeline():
+            try:
+                context = pipeline.prepare_context(
+                    req.question,
+                    history=history_dicts,
+                    session_id=req.session_id,
+                )
+                if context is None:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("empty", None))
+                    return
+
+                loop.call_soon_threadsafe(queue.put_nowait, ("sources", context))
+
+                for token in pipeline.stream_answer(context):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+
+        # Kick off the blocking pipeline work in the default thread-pool executor
+        future = loop.run_in_executor(None, _run_pipeline)
+
         try:
-            history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
-            # Retrieve context (everything except LLM generation)
-            context = pipeline.prepare_context(
-                req.question,
-                history=history_dicts,
-                session_id=req.session_id,
-            )
-
-            if context is None:
-                yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
-                yield _sse("sources", "[]")
-                yield _sse("done", "")
-                return
-
-            # Send sources before streaming tokens
-            yield _sse("sources", json.dumps(context["sources"], ensure_ascii=False))
-            yield _sse("stages", json.dumps(context["stages"], ensure_ascii=False))
-
-            # Stream LLM tokens
-            for token in pipeline.stream_answer(context):
-                yield _sse("token", token)
-
-            yield _sse("done", "")
-        except Exception as e:
-            yield _sse("error", str(e))
+            while True:
+                kind, payload = await queue.get()
+                if kind == "empty":
+                    yield _sse("token", "The knowledge base is empty. Please ingest a document first.")
+                    yield _sse("sources", "[]")
+                    yield _sse("done", "")
+                    break
+                elif kind == "sources":
+                    yield _sse("sources", json.dumps(payload["sources"], ensure_ascii=False))
+                    yield _sse("stages", json.dumps(payload["stages"], ensure_ascii=False))
+                elif kind == "token":
+                    yield _sse("token", payload)
+                elif kind == "done":
+                    yield _sse("done", "")
+                    break
+                elif kind == "error":
+                    yield _sse("error", payload)
+                    break
+        finally:
+            await future  # ensure the thread has finished before the response closes
 
     return StreamingResponse(
         event_stream(),
@@ -191,8 +254,19 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {escaped}\n\n"
 
 
+# Job registry: maps job_id → asyncio.Queue for ingest progress streaming.
+# Entry is created by POST /api/ingest and removed when the progress SSE closes.
+_ingest_jobs: dict[str, asyncio.Queue] = {}
+
+
 @app.post("/api/ingest")
 async def ingest(file: UploadFile = File(...)):
+    """
+    Upload a file and start ingestion in the background.
+
+    Returns a job_id immediately — connect to GET /api/ingest/{job_id}/progress
+    to stream real-time progress events via SSE.
+    """
     allowed = {".pdf", ".md", ".txt"}
     suffix = Path(file.filename).suffix.lower()
     if suffix not in allowed:
@@ -201,45 +275,110 @@ async def ingest(file: UploadFile = File(...)):
             detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(allowed)}"
         )
 
+    already_exists = await asyncio.to_thread(pipeline.store.source_exists, file.filename)
+    if already_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{file.filename}' is already in the knowledge base. Clear the knowledge base before re-ingesting.",
+        )
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
-    try:
-        pipeline.ingest(tmp_path)
-        return {
-            "message": f"'{file.filename}' ingested successfully.",
-            "chunk_count": pipeline.store.count(),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        os.unlink(tmp_path)
+    filename = file.filename
+    job_id = str(uuid.uuid4())
+    queue: asyncio.Queue = asyncio.Queue()
+    _ingest_jobs[job_id] = queue
+    loop = asyncio.get_running_loop()
+
+    def _run():
+        try:
+            def progress_callback(stage, payload=None):
+                event = {"stage": stage, **(payload or {})}
+                loop.call_soon_threadsafe(queue.put_nowait, ("progress", event))
+
+            pipeline.ingest(tmp_path, source_name=filename, progress_callback=progress_callback)
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    loop.run_in_executor(None, _run)
+    return {"job_id": job_id, "filename": filename}
+
+
+@app.get("/api/ingest/{job_id}/progress")
+async def ingest_progress(job_id: str):
+    """
+    Stream ingest progress as Server-Sent Events.
+
+    Event types:
+      progress  — JSON payload with {"stage": "loading"|"chunking"|"embedding"|"storing", ...}
+      done      — ingestion finished successfully
+      error     — ingestion failed; data contains the error message
+    """
+    if job_id not in _ingest_jobs:
+        raise HTTPException(status_code=404, detail="Job not found or already completed.")
+
+    queue = _ingest_jobs[job_id]
+
+    async def event_stream():
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "progress":
+                    yield _sse("progress", json.dumps(payload))
+                elif kind == "done":
+                    yield _sse("done", "")
+                    break
+                elif kind == "error":
+                    yield _sse("error", payload)
+                    break
+        finally:
+            _ingest_jobs.pop(job_id, None)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/status", response_model=StatusResponse)
 async def status():
     """Return how many chunks are in the vector store."""
+    chunk_count, sources = await asyncio.gather(
+        asyncio.to_thread(pipeline.store.count),
+        asyncio.to_thread(pipeline.store.get_sources),
+    )
     return StatusResponse(
-        chunk_count=pipeline.store.count(),
+        chunk_count=chunk_count,
         hybrid_alpha=config.HYBRID_ALPHA,
         use_reranker=config.USE_RERANKER,
         llm_provider=config.LLM_PROVIDER,
         auth_required=bool(config.ADMIN_TOKEN),
+        sources=sources,
     )
 
 @app.post("/api/settings")
-async def update_settings(req: SettingsRequest):
+async def update_settings(
+    req: SettingsRequest,
+    authorization: str | None = Header(default=None),
+):
     """
     Update system settings and persist them to .env file.
 
-    When ADMIN_TOKEN is set in .env, the request must include a matching
-    admin_token field. When ADMIN_TOKEN is blank/unset, access is open
-    (convenient for local dev).
+    When ADMIN_TOKEN is set in .env, the request must carry:
+        Authorization: Bearer <token>
+    When ADMIN_TOKEN is blank/unset, access is open (convenient for local dev).
     """
     # ── Authentication ──────────────────────────────────────────
-    if config.ADMIN_TOKEN and req.admin_token != config.ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+    _require_auth(authorization)
 
     # ── Input validation ───────────────────────────────────────
     if req.hybrid_alpha is not None:
@@ -298,9 +437,10 @@ async def update_settings(req: SettingsRequest):
 
 
 @app.post("/api/clear")
-async def clear():
+async def clear(authorization: str | None = Header(default=None)):
     """Wipe all chunks from the vector store."""
-    pipeline.store.clear()
+    _require_auth(authorization)
+    await asyncio.to_thread(pipeline.store.clear)
     return {"message": "Knowledge base cleared.", "chunk_count": 0}
 
 
@@ -311,7 +451,7 @@ async def reset_session():
     Call this when the user starts a new chat or refreshes.
     No-op when LLM_PROVIDER=gemini.
     """
-    pipeline.reset_local_session()
+    await asyncio.to_thread(pipeline.reset_local_session)
     return {"message": "Session reset.", "llm_provider": config.LLM_PROVIDER}
 
 
@@ -326,16 +466,23 @@ async def retrieve(req: RetrieveRequest):
     try:
         from backend.core import config as cfg
         # Embed
-        query_vector = pipeline.embedder.embed([req.question], mode="query")[0]
+        vectors = await asyncio.to_thread(pipeline.embedder.embed, [req.question], mode="query")
+        query_vector = vectors[0]
         # Stage 1 — hybrid search
-        candidates = pipeline.store.query(
+        candidates = await asyncio.to_thread(
+            pipeline.store.query,
             query_vector,
-            n_results=cfg.RERANK_CANDIDATES,
-            query_text=req.question,
+            cfg.RERANK_CANDIDATES,
+            req.question,
         )
         # Stage 2 — rerank
         if cfg.USE_RERANKER:
-            reranked = pipeline.reranker.rerank(req.question, candidates, top_n=cfg.TOP_K_RESULTS)
+            reranked = await asyncio.to_thread(
+                pipeline.reranker.rerank,
+                req.question,
+                candidates,
+                cfg.TOP_K_RESULTS,
+            )
         else:
             reranked = []
 

@@ -1,9 +1,12 @@
 
 
+import logging
 import uuid
 import weaviate
 import weaviate.classes as wvc
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 class WeaviateStore:
@@ -17,7 +20,7 @@ class WeaviateStore:
         port = config.WEAVIATE_PORT
         grpc_port = config.WEAVIATE_GRPC_PORT
 
-        print(f"[weaviate_store] Connecting to Weaviate at {host}:{port}...")
+        logger.info("Connecting to Weaviate at %s:%d...", host, port)
 
         try:
             self.client = weaviate.connect_to_local(
@@ -34,11 +37,11 @@ class WeaviateStore:
                 "Make sure your Docker container is running: docker compose up -d"
             ) from e
 
-        print(f"[weaviate_store] Connected. Ensuring collection '{config.WEAVIATE_COLLECTION_NAME}' exists...")
+        logger.info("Connected. Ensuring collection '%s' exists...", config.WEAVIATE_COLLECTION_NAME)
         self._ensure_collection()
 
         count = self.count()
-        print(f"[weaviate_store] Collection ready. Current object count: {count}")
+        logger.info("Collection ready. Current object count: %d", count)
 
     def _ensure_collection(self):
 
@@ -68,7 +71,7 @@ class WeaviateStore:
                     ),
                 ],
             )
-            print(f"[weaviate_store] Created collection '{config.WEAVIATE_COLLECTION_NAME}'.")
+            logger.info("Created collection '%s'.", config.WEAVIATE_COLLECTION_NAME)
 
         self.collection = self.client.collections.get(config.WEAVIATE_COLLECTION_NAME)
 
@@ -83,7 +86,7 @@ class WeaviateStore:
 
     def add_chunks(self, chunks: list[dict], embeddings: list[list[float]]) -> None:
 
-        print(f"[weaviate_store] Upserting {len(chunks)} chunks...")
+        logger.info("Upserting %d chunks...", len(chunks))
 
         with self.collection.batch.dynamic() as batch:
             for chunk, embedding in zip(chunks, embeddings):
@@ -104,10 +107,10 @@ class WeaviateStore:
         # Check for any batch errors
         if self.collection.batch.failed_objects:
             n = len(self.collection.batch.failed_objects)
-            print(f"[weaviate_store] Warning: {n} objects failed to insert.")
+            logger.warning("%d object(s) failed to insert.", n)
 
         total = self.count()
-        print(f"[weaviate_store] Done. Total objects in DB: {total}")
+        logger.info("Done. Total objects in store: %d", total)
 
     def query(
         self,
@@ -165,11 +168,27 @@ class WeaviateStore:
         agg = self.collection.aggregate.over_all(total_count=True)
         return agg.total_count or 0
 
+    def source_exists(self, source_name: str) -> bool:
+        """Return True if at least one chunk for this source filename exists."""
+        response = self.collection.query.fetch_objects(
+            filters=wvc.query.Filter.by_property("source").equal(source_name),
+            limit=1,
+            return_properties=["source"],
+        )
+        return len(response.objects) > 0
+
+    def get_sources(self) -> list[str]:
+        """Return a sorted list of distinct source filenames in the store."""
+        response = self.collection.query.fetch_objects(
+            return_properties=["source"],
+            limit=10_000,
+        )
+        return sorted({obj.properties["source"] for obj in response.objects})
+
     def clear(self) -> None:
         """Delete the entire collection (irreversible)."""
         self.client.collections.delete(config.WEAVIATE_COLLECTION_NAME)
-        print(f"[weaviate_store] Collection '{config.WEAVIATE_COLLECTION_NAME}' deleted.")
-        # Recreate empty collection
+        logger.info("Collection '%s' deleted.", config.WEAVIATE_COLLECTION_NAME)
         self._ensure_collection()
 
     def close(self) -> None:
@@ -178,4 +197,4 @@ class WeaviateStore:
         Call this when done — especially important for Embedded mode.
         """
         self.client.close()
-        print("[weaviate_store] Weaviate connection closed.")
+        logger.info("Weaviate connection closed.")
