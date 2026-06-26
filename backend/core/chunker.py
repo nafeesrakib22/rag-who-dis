@@ -1,6 +1,10 @@
+import logging
+
 import nltk
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+
+logger = logging.getLogger(__name__)
 
 # Ensure NLTK data is downloaded (silent if already exists)
 try:
@@ -145,7 +149,5 @@ def chunk_documents(
         all_chunks.extend(page_chunks)
 
     method = "semantic" if semantic_chunker else "fixed-size"
-    print(
-        f"[chunker] {len(pages)} page(s) → {len(all_chunks)} chunks ({method})"
-    )
+    logger.info("%d page(s) → %d chunks (%s)", len(pages), len(all_chunks), method)
     return all_chunks

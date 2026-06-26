@@ -6,9 +6,13 @@ The model is downloaded to the HuggingFace cache on first use
 (~600 MB) and reused from disk on subsequent starts.
 """
 
+import logging
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder:
@@ -18,15 +22,14 @@ class Embedder:
     def __init__(self, model_name: str = None):
         self.model_name = model_name or config.EMBED_MODEL_NAME
 
-        print(f"[embedder] Loading '{self.model_name}' from HuggingFace (in-process)...")
+        logger.info("Loading '%s' from HuggingFace (in-process)...", self.model_name)
         token = config.HF_TOKEN or None
         self.model = SentenceTransformer(self.model_name, token=token, device="cpu")
-
 
         # Detect dimension with a startup test
         test = self.model.encode(["startup dimension check"], convert_to_numpy=True)
         self.dimension = test.shape[1]
-        print(f"[embedder] Ready. Vector dimension: {self.dimension}")
+        logger.info("Ready. Vector dimension: %d", self.dimension)
 
     # ------------------------------------------------------------------
     # Public API
@@ -46,10 +49,8 @@ class Embedder:
         for start in range(0, total, self.BATCH_SIZE):
             batch = texts[start : start + self.BATCH_SIZE]
             end = min(start + self.BATCH_SIZE, total)
-            print(f"[embedder] Embedding {end}/{total}...", end="\r", flush=True)
+            logger.debug("Embedding %d/%d...", end, total)
             vecs = self.model.encode(batch, convert_to_numpy=True)
             all_embeddings.extend(vecs.tolist())
 
-        if total > self.BATCH_SIZE:
-            print()  # newline after progress line
         return all_embeddings

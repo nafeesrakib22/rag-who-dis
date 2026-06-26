@@ -44,8 +44,12 @@ Bangla. It significantly outperforms the previous MiniLM model on complex script
 and cross-lingual retrieval.
 """
 
+import logging
+
 from sentence_transformers.cross_encoder import CrossEncoder
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 class Reranker:
@@ -62,9 +66,9 @@ class Reranker:
         Load the cross-encoder model.
         """
         self.model_name = model_name or config.RERANK_MODEL_NAME
-        print(f"[reranker] Loading multilingual cross-encoder '{self.model_name}' on CPU...")
+        logger.info("Loading multilingual cross-encoder '%s' on CPU...", self.model_name)
         self.model = CrossEncoder(self.model_name, device="cpu")
-        print("[reranker] Cross-encoder ready.")
+        logger.info("Cross-encoder ready.")
 
     def rerank(self, query: str, chunks: list[dict], top_n: int = 5) -> list[dict]:
         """
@@ -89,10 +93,12 @@ class Reranker:
         # Sort by rerank_score descending
         scored_chunks.sort(key=lambda x: x["rerank_score"], reverse=True)
 
-        print(f"[reranker] Re-ranked {len(chunks)} candidates → kept top {top_n}:")
+        logger.debug("Re-ranked %d candidates → kept top %d.", len(chunks), top_n)
         for i, c in enumerate(scored_chunks[:top_n], 1):
-            print(f"  [{i}] score={c['rerank_score']:+.2f} | "
-                  f"{c['source']} p{c['page']} c{c['chunk_index']} "
-                  f"(bi-enc dist={c.get('distance', '?')})")
+            logger.debug(
+                "  [%d] score=%+.2f | %s p%s c%s (bi-enc dist=%s)",
+                i, c["rerank_score"], c["source"], c["page"],
+                c["chunk_index"], c.get("distance", "?"),
+            )
 
         return scored_chunks[:top_n]

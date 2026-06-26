@@ -19,10 +19,13 @@ LOCAL LLM SESSION MODEL:
   persisted to disk — a backend restart resets all conversations.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from google import genai
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 # ── System prompt used by the local LLM session ──────────────────────────────
@@ -66,7 +69,7 @@ class GeminiLLMService(BaseLLMService):
 
     def generate_content(self, prompt: str, temperature: float = None) -> str:
         temp = temperature if temperature is not None else config.GEMINI_TEMPERATURE
-        print(f"[llm] Calling Gemini ({self.model})...")
+        logger.debug("Calling Gemini (%s)...", self.model)
         completion = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -77,7 +80,7 @@ class GeminiLLMService(BaseLLMService):
     def stream_content(self, prompt: str, temperature: float = None) -> Iterator[str]:
         """Yield text chunks as Gemini streams them."""
         temp = temperature if temperature is not None else config.GEMINI_TEMPERATURE
-        print(f"[llm] Streaming from Gemini ({self.model})...")
+        logger.debug("Streaming from Gemini (%s)...", self.model)
         for chunk in self.client.models.generate_content_stream(
             model=self.model,
             contents=prompt,
@@ -101,7 +104,7 @@ class LocalLLMService(BaseLLMService):
     def __init__(self, model_path: str):
         import litert_lm  # lazy import — only loaded when local mode is active
 
-        print(f"[llm-local] Loading litert-lm engine from '{model_path}'...")
+        logger.info("Loading litert-lm engine from '%s'...", model_path)
         self._litert_lm = litert_lm
         self._engine = litert_lm.Engine(model_path, backend=litert_lm.Backend.CPU)
 
@@ -110,7 +113,7 @@ class LocalLLMService(BaseLLMService):
         self._active_session_ctx = None   # context manager object
         self._active_session = None       # the conversation object
 
-        print("[llm-local] Engine ready.")
+        logger.info("Local LLM engine ready.")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -119,7 +122,7 @@ class LocalLLMService(BaseLLMService):
         Stateless single-turn generation (for query condensation / summarisation).
         Creates a temporary session that is closed immediately after.
         """
-        print("[llm-local] Stateless generation call...")
+        logger.debug("Stateless generation call...")
         with self._engine.create_conversation() as conv:
             response = conv.send_message(prompt)
             return response["content"][0]["text"].strip()
@@ -139,14 +142,14 @@ class LocalLLMService(BaseLLMService):
             f"QUESTION:\n{question}"
         )
 
-        print(f"[llm-local] Sending turn to session '{session_id[:8]}...'")
+        logger.debug("Sending turn to session '%s...'", session_id[:8])
         response = session.send_message(message)
         return response["content"][0]["text"].strip()
 
     def reset_session(self) -> None:
         """Close and discard the active session. Next chat() call creates a fresh one."""
         self._close_active_session()
-        print("[llm-local] Session reset.")
+        logger.info("Session reset.")
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -157,7 +160,7 @@ class LocalLLMService(BaseLLMService):
         # New session_id → close old session, open a fresh one
         self._close_active_session()
 
-        print(f"[llm-local] Creating new session '{session_id[:8]}...'")
+        logger.debug("Creating new session '%s...'", session_id[:8])
         system_messages = [
             {
                 "role": "system",
@@ -176,7 +179,7 @@ class LocalLLMService(BaseLLMService):
             try:
                 self._active_session_ctx.__exit__(None, None, None)
             except Exception as e:
-                print(f"[llm-local] Warning: error closing session — {e}")
+                logger.warning("Error closing session: %s", e)
         self._active_session = None
         self._active_session_ctx = None
         self._active_session_id = None

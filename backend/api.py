@@ -12,6 +12,7 @@ Endpoints:
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -26,12 +27,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.core import config
+from backend.core.logging_config import configure_logging
 from backend.core.rag import RAGPipeline
+
+configure_logging()
 
 
 # ---------------------------------------------------------------------------
 # App lifecycle — load the heavy models once at startup
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 pipeline: RAGPipeline = None
 
@@ -39,14 +45,13 @@ pipeline: RAGPipeline = None
 async def lifespan(app: FastAPI):
     """Load the RAG pipeline (models + DB connection) once at server startup."""
     global pipeline
-    print("[api] Starting up — loading RAG pipeline...")
+    logger.info("Starting up — loading RAG pipeline...")
     pipeline = RAGPipeline()
-    print("[api] RAG pipeline ready.")
+    logger.info("RAG pipeline ready.")
     yield
-    # Shutdown
     if pipeline and hasattr(pipeline.store, "close"):
         pipeline.store.close()
-    print("[api] Shutdown complete.")
+    logger.info("Shutdown complete.")
 
 
 app = FastAPI(title="RAG API", lifespan=lifespan)

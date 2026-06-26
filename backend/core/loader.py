@@ -1,9 +1,12 @@
 
 
 import json
+import logging
 import os
 from pathlib import Path
 from . import config  # Ensures .env is loaded
+
+logger = logging.getLogger(__name__)
 
 
 def is_text_corrupted(text: str) -> bool:
@@ -63,11 +66,14 @@ def get_ocr_reader():
             major, minor = torch.cuda.get_device_capability(0)
             if major >= 7:
                 gpu_available = True
-                print(f"[loader] GPU detected (sm_{major}{minor}). Enabling GPU for OCR.")
+                logger.info("GPU detected (sm_%d%d). Enabling GPU for OCR.", major, minor)
             else:
-                print(f"[loader] GPU detected (sm_{major}{minor}), but PyTorch kernels lack support. Falling back to CPU.")
+                logger.warning(
+                    "GPU detected (sm_%d%d) but PyTorch kernels lack support. Falling back to CPU.",
+                    major, minor,
+                )
         else:
-            print("[loader] No GPU detected. OCR will run on CPU.")
+            logger.info("No GPU detected. OCR will run on CPU.")
             
         # Initialize reader for Bangla and English
         # We also pass 'quantize=True' for CPU mode to reduce memory footprint
@@ -83,7 +89,7 @@ def google_ocr_with_gemini(images) -> list[str]:
     
     api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
     if not api_key:
-        print("[loader] Error: GOOGLE_API_KEY not found in .env. Falling back to local OCR.")
+        logger.error("GOOGLE_API_KEY not found in .env. Falling back to local OCR.")
         return None
 
     client = genai.Client(api_key=api_key)
@@ -91,7 +97,7 @@ def google_ocr_with_gemini(images) -> list[str]:
     model_id = 'gemini-2.5-flash'
     
     texts = []
-    print(f"[loader] Using Google Vision OCR ({model_id}) for {len(images)} pages...")
+    logger.info("Using Google Vision OCR (%s) for %d pages...", model_id, len(images))
 
     for i, img in enumerate(images, start=1):
         max_retries = 3
@@ -110,7 +116,7 @@ def google_ocr_with_gemini(images) -> list[str]:
                 )
                 extracted_text = response.text.strip()
                 texts.append(extracted_text)
-                print(f"  - Google OCR done for page {i}")
+                logger.debug("Google OCR done for page %d.", i)
                 success = True
                 # Small polite delay between pages for free tier (RPM limits)
                 time.sleep(2)
@@ -118,11 +124,14 @@ def google_ocr_with_gemini(images) -> list[str]:
             except Exception as e:
                 error_str = str(e)
                 if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                    print(f"  - Rate limit hit on page {i} (Attempt {attempt+1}/{max_retries}). Retrying in {retry_delay}s...")
+                    logger.warning(
+                        "Rate limit on page %d (attempt %d/%d). Retrying in %ds...",
+                        i, attempt + 1, max_retries, retry_delay,
+                    )
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay *= 2
                 else:
-                    print(f"  - Error on page {i}: {e}")
+                    logger.error("OCR error on page %d: %s", i, e)
                     break
         
         if not success:
@@ -139,7 +148,7 @@ def load_pdf_ocr(file_path: str, source_name: str = None) -> list[dict]:
 
     strategy = os.environ.get("OCR_STRATEGY", "local").lower()
     filename = source_name or os.path.basename(file_path)
-    print(f"[loader] OCR fallback starting for '{filename}' (Strategy: {strategy})...")
+    logger.info("OCR fallback starting for '%s' (strategy: %s)...", filename, strategy)
 
     # DPI selection: Vision models handle lower DPI better than local OCR.
     dpi = 200 if strategy == "local" else 150
@@ -158,7 +167,7 @@ def load_pdf_ocr(file_path: str, source_name: str = None) -> list[dict]:
                     })
             return pages
         else:
-            print("[loader] Google Vision OCR failed. Falling back to local...")
+            logger.warning("Google Vision OCR failed. Falling back to local OCR...")
 
     # Default to Local OCR
     reader = get_ocr_reader()
@@ -173,7 +182,7 @@ def load_pdf_ocr(file_path: str, source_name: str = None) -> list[dict]:
                 "source": filename,
                 "page": page_num,
             })
-            print(f"  - Local OCR done for page {page_num}")
+            logger.debug("Local OCR done for page %d.", page_num)
         
         del img_arr
         img.close()
@@ -204,12 +213,12 @@ def load_pdf(file_path: str, source_name: str = None) -> list[dict]:
         
         # Trigger OCR if the page is empty (scanned) or text is corrupted (bad encoding)
         if not text:
-            print(f"[loader] Page {page_num} is empty. Triggering OCR fallback...")
+            logger.warning("Page %d is empty. Triggering OCR fallback...", page_num)
             use_ocr = True
             break
-            
+
         if is_text_corrupted(text):
-            print(f"[loader] Corruption detected on page {page_num}. Triggering OCR fallback...")
+            logger.warning("Corruption detected on page %d. Triggering OCR fallback...", page_num)
             use_ocr = True
             break
         
@@ -224,7 +233,7 @@ def load_pdf(file_path: str, source_name: str = None) -> list[dict]:
         # to ensure consistency in quality across pages.
         return load_pdf_ocr(file_path, source_name=source_name)
         
-    print(f"[loader] Loaded PDF '{filename}': {len(temp_pages)} pages with PyMuPDF.")
+    logger.info("Loaded PDF '%s': %d pages via PyMuPDF.", filename, len(temp_pages))
     return temp_pages
 
 
@@ -240,7 +249,7 @@ def load_text(file_path: str, source_name: str = None) -> list[dict]:
     with open(file_path, "r", encoding="utf-8") as f:
         text = f.read().strip()
 
-    print(f"[loader] Loaded text/markdown '{filename}': {len(text)} characters.")
+    logger.info("Loaded text/markdown '%s': %d characters.", filename, len(text))
     return [{"text": text, "source": filename, "page": 1}]
 
 
@@ -344,7 +353,7 @@ def load_json(file_path: str, source_name: str = None) -> list[dict]:
                         "price_tk":     float(pack.get("price_tk") or pack.get("price") or 0),
                         "validity_days": int(pack.get("validity_days") or 0),
                     })
-        print(f"[loader] Loaded JSON '{filename}': {pack_num} packs from nested structure.")
+        logger.info("Loaded JSON '%s': %d packs from nested structure.", filename, pack_num)
 
     # ── Layout 2: flat list ────────────────────────────────────────────────
     elif isinstance(data, list):
@@ -357,7 +366,7 @@ def load_json(file_path: str, source_name: str = None) -> list[dict]:
                 continue
             if text:
                 pages.append({"text": text, "source": filename, "page": i})
-        print(f"[loader] Loaded JSON '{filename}': {len(pages)} records from flat list.")
+        logger.info("Loaded JSON '%s': %d records from flat list.", filename, len(pages))
 
     else:
         raise ValueError(
